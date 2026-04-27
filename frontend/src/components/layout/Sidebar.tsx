@@ -40,6 +40,7 @@ export function Sidebar({ onNavigate, currentPage }: SidebarProps) {
         <button
           onClick={() => setCollapsed(!collapsed)}
           className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
+          aria-label={collapsed ? '展开侧边栏' : '折叠侧边栏'}
         >
           {collapsed ? (
             <ChevronRight className="w-5 h-5" />

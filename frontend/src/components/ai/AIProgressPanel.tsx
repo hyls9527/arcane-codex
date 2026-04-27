@@ -14,6 +14,7 @@ interface AIStatus {
 
 interface AIProgressPanelProps {
   status?: AIStatus
+  isLoading?: boolean
   onStart?: () => void
   onPause?: () => void
   onResume?: () => void
@@ -29,6 +30,7 @@ export function AIProgressPanel({
     failed: 0,
     retrying: 0,
   },
+  isLoading = false,
   onStart,
   onPause,
   onResume,

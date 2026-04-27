@@ -91,10 +91,21 @@ export async function semanticSearch(
 
 // ===== Deduplication =====
 
+export interface DuplicateImage {
+  id: number
+  thumbnail_path: string
+  file_name: string
+  width?: number
+  height?: number
+  file_size?: number
+}
+
 export interface DuplicateGroup {
   id: string
-  image_ids: number[]
+  images: DuplicateImage[]
+  image_ids?: number[]
   similarity: number
+  keepId?: number
 }
 
 export async function scanDuplicates(threshold: number = 90): Promise<DuplicateGroup[]> {

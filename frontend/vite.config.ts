@@ -33,5 +33,11 @@ export default defineConfig({
     env: {
       NODE_ENV: 'test',
     },
+    // Windows 终端输出优化：禁用线程隔离以提高稳定性
+    poolOptions: {
+      threads: {
+        isolate: false,
+      },
+    },
   },
 })

@@ -62,8 +62,8 @@ describe('布局组件单元测试', () => {
       // 初始应该显示 "图库" 文本
       expect(screen.getByText('图库')).toBeInTheDocument()
       
-      // 找到折叠按钮并点击
-      const collapseButton = screen.getByRole('button', { name: /chevron/i })
+      // 找到折叠按钮并点击（使用无障碍标签）
+      const collapseButton = screen.getByRole('button', { name: '折叠侧边栏' })
       fireEvent.click(collapseButton)
       
       // 等待更新完成

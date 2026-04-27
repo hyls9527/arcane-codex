@@ -1,14 +1,14 @@
-import { describe, it, expect, vi } from 'vitest'
-
-// 强制使用 node 环境以支持 fs 和 path 模块
-vi.stubGlobal('process', { env: { ...process.env } })
-
+/**
+ * @vitest-environment node
+ */
+import { describe, it, expect } from 'vitest'
 import fs from 'fs'
 import path from 'path'
 
+// 项目根目录: frontend/src/test -> frontend/src -> frontend -> project root
+const rootDir = path.resolve(__dirname, '..', '..', '..')
+
 describe('项目结构验证测试', () => {
-  const rootDir = path.dirname(__dirname).split(path.sep).slice(0, -2).join(path.sep)
-  
   it('应该存在 src-tauri 目录', () => {
     const tauriDir = path.join(rootDir, 'src-tauri')
     expect(fs.existsSync(tauriDir)).toBe(true)

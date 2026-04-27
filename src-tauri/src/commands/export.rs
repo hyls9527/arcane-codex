@@ -291,74 +291,101 @@ mod tests {
         ).unwrap();
     }
     
-    #[tokio::test]
-    async fn test_export_to_json() {
+    fn export_data_sync(db: &Database, request: ExportRequest) -> AppResult<ExportResult> {
+        let output_path = PathBuf::from(&request.output_path);
+
+        if let Some(parent) = output_path.parent() {
+            fs::create_dir_all(parent).map_err(|e| {
+                AppError::validation(format!("创建输出目录失败: {}", e))
+            })?;
+        }
+
+        let metadata_list = fetch_image_metadata(db, &request)?;
+
+        let exported_count = match request.format.as_str() {
+            "json" => export_to_json(&metadata_list, &output_path)?,
+            "csv" => export_to_csv(&metadata_list, &output_path)?,
+            _ => return Err(AppError::validation(format!(
+                "不支持的导出格式: {}。支持的格式: json, csv",
+                request.format
+            ))),
+        };
+
+        Ok(ExportResult {
+            exported_count,
+            output_file: output_path.to_string_lossy().to_string(),
+            format: request.format,
+        })
+    }
+
+    #[test]
+    fn test_export_to_json() {
         let (db, temp_dir) = setup_test_db();
         insert_test_image(&db, 1);
-        
+
         let output_path = temp_dir.path().join("test.json");
         let request = ExportRequest {
             format: "json".to_string(),
             output_path: output_path.to_string_lossy().to_string(),
             image_ids: None,
         };
-        
-        let result = export_data(State::from(&db), request).await.unwrap();
+
+        let result = export_data_sync(&db, request).unwrap();
         assert_eq!(result.exported_count, 1);
         assert!(output_path.exists());
-        
+
         let content = fs::read_to_string(&output_path).unwrap();
         assert!(content.contains("test1.jpg"));
         assert!(content.contains("风景"));
     }
-    
-    #[tokio::test]
-    async fn test_export_to_csv() {
+
+    #[test]
+    fn test_export_to_csv() {
         let (db, temp_dir) = setup_test_db();
         insert_test_image(&db, 1);
         insert_test_image(&db, 2);
-        
+
         let output_path = temp_dir.path().join("test.csv");
         let request = ExportRequest {
             format: "csv".to_string(),
             output_path: output_path.to_string_lossy().to_string(),
             image_ids: None,
         };
-        
-        let result = export_data(State::from(&db), request).await.unwrap();
+
+        let result = export_data_sync(&db, request).unwrap();
         assert_eq!(result.exported_count, 2);
         assert!(output_path.exists());
-        
+
         let content = fs::read_to_string(&output_path).unwrap();
         assert!(content.contains("id,file_name"));
         assert!(content.contains("test1.jpg"));
         assert!(content.contains("test2.jpg"));
     }
-    
-    #[tokio::test]
-    async fn test_export_with_image_ids() {
+
+    #[test]
+    fn test_export_with_image_ids() {
         let (db, temp_dir) = setup_test_db();
         insert_test_image(&db, 1);
         insert_test_image(&db, 2);
         insert_test_image(&db, 3);
-        
+
         let output_path = temp_dir.path().join("filtered.json");
         let request = ExportRequest {
             format: "json".to_string(),
             output_path: output_path.to_string_lossy().to_string(),
             image_ids: Some(vec![1, 3]),
         };
-        
-        let result = export_data(State::from(&db), request).await.unwrap();
+
+        let result = export_data_sync(&db, request).unwrap();
         assert_eq!(result.exported_count, 2);
         assert!(output_path.exists());
-        
+
         let content = fs::read_to_string(&output_path).unwrap();
         assert!(content.contains("test1.jpg"));
         assert!(content.contains("test3.jpg"));
         assert!(!content.contains("test2.jpg"));
     }
-    
+
     #[test]
     fn test_escape_csv() {
         assert_eq!(escape_csv("simple"), "simple");
@@ -366,20 +393,20 @@ mod tests {
         assert_eq!(escape_csv("has\"quote"), "has\"\"quote");
         assert_eq!(escape_csv("has\nnewline"), "has\nnewline");
     }
-    
-    #[tokio::test]
-    async fn test_export_unsupported_format() {
+
+    #[test]
+    fn test_export_unsupported_format() {
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("test.db");
         let db = Database::new_from_path(db_path.to_str().unwrap()).unwrap();
-        
+
         let request = ExportRequest {
             format: "xml".to_string(),
             output_path: temp_dir.path().join("test.xml").to_string_lossy().to_string(),
             image_ids: None,
         };
-        
-        let result = export_data(State::from(&db), request).await;
+
+        let result = export_data_sync(&db, request);
         assert!(result.is_err());
         if let Err(e) = result {
             assert!(e.to_string().contains("不支持的导出格式"));

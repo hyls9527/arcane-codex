@@ -1,110 +1,81 @@
-import { useState, useEffect } from 'react'
-import { useTranslation } from 'react-i18next'
-import { X, CheckCircle, AlertCircle, Loader2 } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
-import { cn } from '@/utils/cn'
+import { CheckCircle, Loader2 } from 'lucide-react'
 
-interface ImportProgress {
-  current_file: string
+interface ImportProgressPayload {
   current: number
   total: number
-  status: 'processing' | 'success' | 'duplicate' | 'error'
+  currentFile?: string
+  status: 'processing' | 'completed'
 }
 
-interface ImportProgressBarProps {
+interface ImportProgressProps {
   onComplete?: () => void
 }
 
-export function ImportProgressBar({ onComplete }: ImportProgressBarProps) {
-  const { t } = useTranslation()
-  const [isVisible, setIsVisible] = useState(false)
-  const [progress, setProgress] = useState<ImportProgress>({
-    current_file: '',
-    current: 0,
-    total: 0,
-    status: 'processing',
-  })
+export function ImportProgressBar({ onComplete }: ImportProgressProps) {
+  const [progress, setProgress] = useState<ImportProgressPayload | null>(null)
+  const [visible, setVisible] = useState(false)
 
   useEffect(() => {
-    let unlisten: (() => void) | undefined
+    const unlisten = listen<ImportProgressPayload>('import-progress', (event) => {
+      setProgress(event.payload)
+      setVisible(true)
 
-    const setupListener = async () => {
-      unlisten = await listen<ImportProgress>('import-progress', (event) => {
-        setProgress(event.payload)
-        setIsVisible(true)
-
-        // Auto-hide when import completes
-        if (event.payload.current >= event.payload.total) {
+      if (event.payload.status === 'completed') {
+        setTimeout(() => {
+          setVisible(false)
+          setProgress(null)
           onComplete?.()
-          setTimeout(() => setIsVisible(false), 3000)
-        }
-      })
-    }
-
-    setupListener()
+        }, 1500)
+      }
+    })
 
     return () => {
-      if (unlisten) unlisten()
+      unlisten.then((fn) => fn())
     }
-  }, [])
+  }, [onComplete])
 
-  if (!isVisible) return null
+  if (!visible || !progress) return null
 
-  const percentage = progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : 0
-
-  const getStatusIcon = () => {
-    switch (progress.status) {
-      case 'success':
-        return <CheckCircle className="w-4 h-4 text-green-500" />
-      case 'error':
-        return <AlertCircle className="w-4 h-4 text-red-500" />
-      case 'duplicate':
-        return <AlertCircle className="w-4 h-4 text-yellow-500" />
-      default:
-        return <Loader2 className="w-4 h-4 text-blue-500 animate-spin" />
-    }
-  }
+  const percent = progress.total > 0
+    ? Math.round((progress.current / progress.total) * 100)
+    : 0
+  const isCompleted = progress.status === 'completed'
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 w-96 bg-white dark:bg-dark-100 rounded-lg shadow-xl border border-gray-200 dark:border-gray-700">
-      <div className="p-4">
-        <div className="flex items-center justify-between mb-2">
-          <div className="flex items-center gap-2">
-            {getStatusIcon()}
-            <span className="text-sm font-medium">
-              {t('import.importing')} {progress.current}/{progress.total}
-            </span>
-          </div>
-          <button
-            onClick={() => setIsVisible(false)}
-            className="p-1 hover:bg-gray-100 dark:hover:bg-dark-200 rounded transition-colors"
-            aria-label={t('import.close')}
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        {/* Progress Bar */}
-        <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2 mb-2">
-          <div
-            className={cn(
-              'h-2 rounded-full transition-all duration-300',
-              progress.status === 'error' ? 'bg-red-500' : 'bg-primary-500'
-            )}
-            style={{ width: `${percentage}%` }}
-          />
-        </div>
-
-        {/* Current File */}
-        {progress.current_file && (
-          <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
-            {progress.current_file}
-          </p>
+    <div className="fixed bottom-4 right-4 z-50 w-80 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-lg p-4 transition-all duration-300">
+      <div className="flex items-center gap-2 mb-2">
+        {isCompleted ? (
+          <CheckCircle className="w-4 h-4 text-green-500 shrink-0" />
+        ) : (
+          <Loader2 className="w-4 h-4 text-primary-500 animate-spin shrink-0" />
         )}
-
-        {/* Percentage */}
-        <p className="text-xs text-gray-400 mt-1">{percentage}%</p>
+        <span className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
+          {isCompleted ? '导入完成' : `导入中 ${progress.current}/${progress.total}`}
+        </span>
       </div>
+
+      {!isCompleted && progress.currentFile && (
+        <p className="text-xs text-gray-500 dark:text-gray-400 mb-2 truncate">
+          {progress.currentFile}
+        </p>
+      )}
+
+      <div className="w-full h-2 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden">
+        <div
+          className={`h-full rounded-full transition-all duration-300 ${
+            isCompleted
+              ? 'bg-green-500'
+              : 'bg-primary-500'
+          }`}
+          style={{ width: `${percent}%` }}
+        />
+      </div>
+
+      <p className="text-xs text-gray-400 mt-1 text-right">
+        {percent}%
+      </p>
     </div>
   )
 }

@@ -1,0 +1,24 @@
+Metadata-Version: 2.4
+Name: cli-anything-arcanecodex
+Version: 0.1.0
+Summary: ArcaneCodex CLI for AI Agents - Local Image Knowledge Management
+Home-page: https://github.com/HKUDS/CLI-Anything
+Author: CLI-Anything Community
+Author-email: community@cli-anything.com
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Requires-Python: >=3.8
+Requires-Dist: click>=8.0
+Dynamic: author
+Dynamic: author-email
+Dynamic: classifier
+Dynamic: home-page
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary

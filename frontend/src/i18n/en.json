@@ -1,0 +1,83 @@
+{
+  "common": {
+    "appName": "Arcane Codex",
+    "confirm": "Confirm",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "save": "Save",
+    "edit": "Edit",
+    "search": "Search",
+    "import": "Import",
+    "export": "Export",
+    "loading": "Loading...",
+    "error": "Error",
+    "success": "Success"
+  },
+  "navigation": {
+    "gallery": "Gallery",
+    "aiTagging": "AI Tagging",
+    "deduplication": "Deduplication",
+    "settings": "Settings"
+  },
+  "gallery": {
+    "title": "Image Gallery",
+    "noImages": "No images yet. Drag and drop to import.",
+    "importSuccess": "Imported {{count}} images",
+    "importDuplicate": "Skipped {{count}} duplicates"
+  },
+  "ai": {
+    "title": "AI Tagging",
+    "startProcessing": "Start Processing",
+    "pause": "Pause",
+    "resume": "Resume",
+    "cancel": "Cancel",
+    "status": {
+      "idle": "Idle",
+      "processing": "Processing...",
+      "completed": "Completed",
+      "failed": "Failed"
+    },
+    "stats": {
+      "total": "Total: {{count}}",
+      "completed": "Completed: {{count}}",
+      "failed": "Failed: {{count}}"
+    }
+  },
+  "settings": {
+    "title": "Settings",
+    "ai": {
+      "title": "AI Configuration",
+      "lmStudioUrl": "LM Studio URL",
+      "concurrency": "Concurrency",
+      "timeout": "Timeout (seconds)",
+      "testConnection": "Test Connection",
+      "connectionSuccess": "Connected successfully!",
+      "connectionFailed": "Connection failed"
+    },
+    "display": {
+      "title": "Display",
+      "theme": "Theme",
+      "language": "Language",
+      "thumbnailSize": "Thumbnail Size"
+    },
+    "storage": {
+      "title": "Storage",
+      "dataDirectory": "Data Directory",
+      "openDirectory": "Open Directory",
+      "backup": "Backup Database",
+      "restore": "Restore from Backup"
+    },
+    "about": {
+      "title": "About",
+      "version": "Version",
+      "license": "MIT License"
+    }
+  },
+  "errors": {
+    "fileTooLarge": "File is too large (max 50MB)",
+    "unsupportedFormat": "Unsupported image format",
+    "fileNotFound": "File not found",
+    "databaseError": "Database error",
+    "aiError": "AI processing error"
+  }
+}

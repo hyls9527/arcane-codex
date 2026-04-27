@@ -1,0 +1,76 @@
+[package]
+name = "arcane-codex"
+version = "0.1.0"
+description = "Arcane Codex - Local-first Image Knowledge Base"
+authors = ["Arcane Codex Team"]
+edition = "2021"
+rust-version = "1.70"
+build = "build.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# 数据库
+rusqlite = { version = "0.31", features = ["bundled", "chrono"] }
+
+# 异步运行时
+tokio = { version = "1", features = ["full"] }
+
+# HTTP 客户端
+reqwest = { version = "0.12", features = ["json", "stream", "multipart"] }
+
+# 图像处理
+image = "0.25"
+kamadak-exif = "0.5"
+
+# 中文分词
+jieba-rs = { version = "0.7", features = ["default"] }
+
+# 错误处理
+thiserror = "1"
+anyhow = "1"
+
+# 日志
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "local-time"] }
+
+# 时间
+chrono = { version = "0.4", features = ["serde"] }
+
+# 文件系统
+walkdir = "2"
+sha2 = "0.10"
+hex = "0.4"
+
+# 并发
+async-channel = "2"
+
+# 序列化
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# ZIP (备份/恢复)
+zip = "0.6"
+
+# Base64 编码
+data-encoding = "2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[lib]
+name = "arcane_codex"
+path = "src/lib.rs"
+
+[[bin]]
+name = "arcane-codex"
+path = "src/main.rs"

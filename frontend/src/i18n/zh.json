@@ -1,0 +1,83 @@
+{
+  "common": {
+    "appName": "Arcane Codex",
+    "confirm": "确认",
+    "cancel": "取消",
+    "delete": "删除",
+    "save": "保存",
+    "edit": "编辑",
+    "search": "搜索",
+    "import": "导入",
+    "export": "导出",
+    "loading": "加载中...",
+    "error": "错误",
+    "success": "成功"
+  },
+  "navigation": {
+    "gallery": "图库",
+    "aiTagging": "AI 打标",
+    "deduplication": "去重",
+    "settings": "设置"
+  },
+  "gallery": {
+    "title": "图片库",
+    "noImages": "还没有图片，拖拽文件开始导入吧",
+    "importSuccess": "成功导入 {{count}} 张图片",
+    "importDuplicate": "跳过 {{count}} 张重复图片"
+  },
+  "ai": {
+    "title": "AI 打标",
+    "startProcessing": "开始处理",
+    "pause": "暂停",
+    "resume": "继续",
+    "cancel": "取消",
+    "status": {
+      "idle": "空闲",
+      "processing": "处理中...",
+      "completed": "已完成",
+      "failed": "失败"
+    },
+    "stats": {
+      "total": "总计: {{count}}",
+      "completed": "已完成: {{count}}",
+      "failed": "失败: {{count}}"
+    }
+  },
+  "settings": {
+    "title": "设置",
+    "ai": {
+      "title": "AI 配置",
+      "lmStudioUrl": "LM Studio 地址",
+      "concurrency": "并发数",
+      "timeout": "超时时间（秒）",
+      "testConnection": "测试连接",
+      "connectionSuccess": "连接成功！",
+      "connectionFailed": "连接失败"
+    },
+    "display": {
+      "title": "显示",
+      "theme": "主题",
+      "language": "语言",
+      "thumbnailSize": "缩略图尺寸"
+    },
+    "storage": {
+      "title": "存储",
+      "dataDirectory": "数据目录",
+      "openDirectory": "打开目录",
+      "backup": "备份数据库",
+      "restore": "从备份恢复"
+    },
+    "about": {
+      "title": "关于",
+      "version": "版本号",
+      "license": "MIT 许可证"
+    }
+  },
+  "errors": {
+    "fileTooLarge": "文件太大（最大 50MB）",
+    "unsupportedFormat": "不支持的图片格式",
+    "fileNotFound": "文件不存在",
+    "databaseError": "数据库错误",
+    "aiError": "AI 处理错误"
+  }
+}

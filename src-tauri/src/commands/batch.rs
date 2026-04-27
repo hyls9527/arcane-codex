@@ -49,11 +49,11 @@ pub async fn batch_update_tags(
     request: BatchUpdateTagsRequest,
 ) -> AppResult<BatchResult> {
     if request.image_ids.is_empty() {
-        return Err(AppError::Validation("请选择至少一张图片".to_string()));
+        return Err(AppError::validation("请选择至少一张图片".to_string()));
     }
 
     if request.tags.is_empty() && request.mode != TagUpdateMode::Remove {
-        return Err(AppError::Validation("标签不能为空".to_string()));
+        return Err(AppError::validation("标签不能为空".to_string()));
     }
 
     let conn = db.open_connection()?;
@@ -89,11 +89,11 @@ pub async fn batch_update_category(
     request: BatchUpdateCategoryRequest,
 ) -> AppResult<BatchResult> {
     if request.image_ids.is_empty() {
-        return Err(AppError::Validation("请选择至少一张图片".to_string()));
+        return Err(AppError::validation("请选择至少一张图片".to_string()));
     }
 
     if request.category.trim().is_empty() {
-        return Err(AppError::Validation("分类不能为空".to_string()));
+        return Err(AppError::validation("分类不能为空".to_string()));
     }
 
     let mut conn = db.open_connection()?;
@@ -101,14 +101,14 @@ pub async fn batch_update_category(
     let mut failed_count = 0usize;
     let mut errors = Vec::new();
 
-    let tx = conn.transaction().map_err(AppError::Database)?;
+    let tx = conn.transaction().map_err(AppError::database)?;
 
     {
         let mut stmt = tx
             .prepare(
                 "UPDATE images SET ai_category = ?, updated_at = datetime('now') WHERE id = ?",
             )
-            .map_err(AppError::Database)?;
+            .map_err(AppError::database)?;
 
         for &image_id in &request.image_ids {
             match stmt.execute(rusqlite::params![request.category, image_id]) {
@@ -121,7 +121,7 @@ pub async fn batch_update_category(
         }
     }
 
-    tx.commit().map_err(AppError::Database)?;
+    tx.commit().map_err(AppError::database)?;
 
     info!(
         "批量分类更新完成: 成功 {}, 失败 {}",
@@ -141,16 +141,16 @@ pub async fn batch_update_fields(
     request: BatchUpdateFieldsRequest,
 ) -> AppResult<BatchResult> {
     if request.image_ids.is_empty() {
-        return Err(AppError::Validation("请选择至少一张图片".to_string()));
+        return Err(AppError::validation("请选择至少一张图片".to_string()));
     }
 
     if request.updates.is_empty() {
-        return Err(AppError::Validation("更新字段不能为空".to_string()));
+        return Err(AppError::validation("更新字段不能为空".to_string()));
     }
 
     for update in &request.updates {
         if !is_valid_field(&update.field) {
-            return Err(AppError::Validation(format!(
+            return Err(AppError::validation(format!(
                 "不支持的字段: {}", update.field
             )));
         }
@@ -256,7 +256,7 @@ fn update_single_image_tags(
         "UPDATE images SET ai_tags = ?, updated_at = datetime('now') WHERE id = ?",
         rusqlite::params![tags_json, image_id],
     )
-    .map_err(AppError::Database)?;
+    .map_err(AppError::database)?;
 
     Ok(())
 }

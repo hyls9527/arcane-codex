@@ -6,3 +6,5 @@ pub mod search;
 pub mod dedup;
 pub mod settings;
 pub mod batch;
+pub mod export;
+pub mod narrative;

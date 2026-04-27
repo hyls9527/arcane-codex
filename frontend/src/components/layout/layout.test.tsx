@@ -6,7 +6,21 @@ import { TopBar } from './TopBar'
 
 // Mock useThemeStore
 vi.mock('@/stores/useThemeStore', () => ({
-  useThemeStore: vi.fn(() => ({ theme: 'light', setTheme: vi.fn() })),
+  useThemeStore: vi.fn(() => ({ applyTheme: vi.fn() })),
+}))
+
+// Mock useConfigStore
+vi.mock('@/stores/useConfigStore', () => ({
+  useConfigStore: vi.fn(() => ({ theme: 'light', language: 'zh', updateField: vi.fn() })),
+  CONFIG_KEYS: { THEME: 'theme', LANGUAGE: 'language' },
+}))
+
+// Mock i18n
+vi.mock('react-i18next', () => ({
+  useTranslation: () => ({
+    t: (key: string) => key,
+    i18n: { changeLanguage: vi.fn(), language: 'zh' },
+  }),
 }))
 
 describe('布局组件单元测试', () => {
@@ -64,7 +78,7 @@ describe('布局组件单元测试', () => {
       
       // 找到折叠按钮并点击（使用无障碍标签）
       const collapseButton = screen.getByRole('button', { name: '折叠侧边栏' })
-      fireEvent.click(collapseButton)
+      await fireEvent.click(collapseButton)
       
       // 等待更新完成
       await waitFor(() => {

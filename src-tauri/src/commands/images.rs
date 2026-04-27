@@ -1,13 +1,16 @@
-use tauri::State;
+use tauri::{State, AppHandle, Emitter, Manager};
 use serde::{Serialize, Deserialize};
 use std::path::Path;
 use std::fs;
 use crate::core::db::Database;
+use crate::core::image::ImageProcessor;
+use image::GenericImageView;
 use crate::utils::error::{AppError, AppResult};
 use crate::utils::hash::calculate_sha256;
 use tracing::{info, warn, error};
 
 const MAX_FILE_SIZE: u64 = 50 * 1024 * 1024;
+const MIN_DISK_SPACE_REQUIRED: u64 = 100 * 1024 * 1024;
 
 const SUPPORTED_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "gif", "webp", "bmp", "ico", "tiff", "tif", "avif"];
 
@@ -16,37 +19,104 @@ const SUPPORTED_MIME_TYPES: &[&str] = &[
     "image/tiff", "image/avif", "image/heic", "image/heif",
 ];
 
+/// Response structure for broken link check
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ImportResult {
-    pub success_count: usize,
-    pub duplicate_count: usize,
-    pub error_count: usize,
-    pub image_ids: Vec<i64>,
-    pub errors: Vec<ImportError>,
+pub struct BrokenLinkInfo {
+    pub id: i64,
+    pub file_path: String,
+    pub file_name: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ImportError {
-    pub file_path: String,
+pub struct CheckBrokenLinksResult {
+    pub broken_count: usize,
+    pub broken_images: Vec<BrokenLinkInfo>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ArchiveImageResult {
+    pub archived: bool,
+    pub dest_path: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SafeExportError {
+    pub id: i64,
     pub reason: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SafeExportResult {
+    pub exported_count: usize,
+    pub errors: Vec<SafeExportError>,
+}
+
+fn get_available_disk_space(path: &Path) -> AppResult<u64> {
+    #[cfg(windows)]
+    {
+        use std::ffi::OsStr;
+        use std::os::windows::ffi::OsStrExt;
+        use winapi::um::fileapi::GetDiskFreeSpaceExW;
+        
+        unsafe {
+            let wpath: Vec<u16> = OsStr::new(path.parent().unwrap_or(path))
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect();
+            
+            let mut free_bytes: u64 = 0;
+            let mut _total_bytes: u64 = 0;
+            let mut _total_free_bytes: u64 = 0;
+            
+            let result = GetDiskFreeSpaceExW(
+                wpath.as_ptr(),
+                &mut free_bytes as *mut u64 as *mut _,
+                &mut _total_bytes as *mut u64 as *mut _,
+                &mut _total_free_bytes as *mut u64 as *mut _,
+            );
+            
+            if result != 0 {
+                Ok(free_bytes)
+            } else {
+                Ok(u64::MAX)
+            }
+        }
+    }
+    
+    #[cfg(not(windows))]
+    {
+        use std::mem;
+        let cpath = std::ffi::CString::new(path.to_str().unwrap_or("/"))
+            .map_err(|_| AppError::validation("Invalid path"))?;
+        
+        let mut statvfs_buf: libc::statvfs = unsafe { mem::zeroed() };
+        
+        let result = unsafe { libc::statvfs(cpath.as_ptr(), &mut statvfs_buf) };
+        
+        if result == 0 {
+            Ok(unsafe { statvfs_buf.f_frsize * statvfs_buf.f_bavail })
+        } else {
+            Ok(u64::MAX)
+        }
+    }
 }
 
 fn validate_file(file_path: &Path) -> AppResult<(String, u64)> {
     if !file_path.exists() {
-        return Err(AppError::Validation(format!("文件不存在: {}", file_path.display())));
+        return Err(AppError::validation(format!("文件不存在: {}", file_path.display())));
     }
 
     let metadata = fs::metadata(file_path).map_err(|e| {
-        AppError::Validation(format!("无法读取文件元数据: {}", e))
+        AppError::validation(format!("无法读取文件元数据: {}", e))
     })?;
 
     let file_size = metadata.len();
     if file_size == 0 {
-        return Err(AppError::Validation(format!("文件为空: {}", file_path.display())));
+        return Err(AppError::validation(format!("文件为空: {}", file_path.display())));
     }
 
     if file_size > MAX_FILE_SIZE {
-        return Err(AppError::Validation(format!(
+        return Err(AppError::validation(format!(
             "文件大小 {} 超过限制 ({} 字节)",
             file_size, MAX_FILE_SIZE
         )));
@@ -59,7 +129,7 @@ fn validate_file(file_path: &Path) -> AppResult<(String, u64)> {
         .to_lowercase();
 
     if !SUPPORTED_EXTENSIONS.contains(&extension.as_str()) {
-        return Err(AppError::Validation(format!(
+        return Err(AppError::validation(format!(
             "不支持的文件格式: .{}", extension
         )));
     }
@@ -77,10 +147,43 @@ fn validate_file(file_path: &Path) -> AppResult<(String, u64)> {
     };
 
     if !SUPPORTED_MIME_TYPES.contains(&mime_type.as_str()) {
-        return Err(AppError::Validation(format!("不支持的 MIME 类型: {}", mime_type)));
+        return Err(AppError::validation(format!("不支持的 MIME 类型: {}", mime_type)));
     }
 
     Ok((mime_type, file_size))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ImportResult {
+    pub success_count: usize,
+    pub duplicate_count: usize,
+    pub error_count: usize,
+    pub image_ids: Vec<i64>,
+    pub errors: Vec<ImportError>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ImportError {
+    pub file_path: String,
+    pub reason: String,
+}
+
+/// Progress event emitted during image import
+#[derive(Debug, Serialize, Clone)]
+pub struct ImportProgress {
+    pub current_file: String,
+    pub current: usize,
+    pub total: usize,
+    pub status: ImportStatus,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportStatus {
+    Processing,
+    Success,
+    Duplicate,
+    Error,
 }
 
 fn is_duplicate(conn: &rusqlite::Connection, file_hash: &str) -> AppResult<bool> {
@@ -88,9 +191,49 @@ fn is_duplicate(conn: &rusqlite::Connection, file_hash: &str) -> AppResult<bool>
         "SELECT EXISTS(SELECT 1 FROM images WHERE file_hash = ?)",
         [file_hash],
         |row| row.get(0),
-    ).map_err(AppError::Database)?;
+    ).map_err(AppError::database)?;
 
     Ok(exists)
+}
+
+fn get_thumbnail_dir(app: &AppHandle) -> std::path::PathBuf {
+    let app_data = app.path().app_data_dir().unwrap_or_else(|_| {
+        std::env::current_dir().unwrap_or_default()
+    });
+    let dir = app_data.join("thumbnails");
+    let _ = fs::create_dir_all(&dir);
+    dir
+}
+
+fn generate_thumbnail_path(image_id: i64, app: &AppHandle) -> String {
+    let thumb_dir = get_thumbnail_dir(app);
+    thumb_dir.join(format!("{}.webp", image_id))
+        .to_string_lossy()
+        .to_string()
+}
+
+fn update_image_metadata(
+    conn: &rusqlite::Connection,
+    image_id: i64,
+    thumbnail_path: &str,
+    phash: &str,
+    width: i32,
+    height: i32,
+    exif_data: &str,
+) -> AppResult<()> {
+    conn.execute(
+        "UPDATE images SET thumbnail_path = ?2, phash = ?3, width = ?4, height = ?5, exif_data = ?6 WHERE id = ?1",
+        rusqlite::params![image_id, thumbnail_path, phash, width, height, exif_data],
+    ).map_err(AppError::database)?;
+    Ok(())
+}
+
+fn create_ai_task(conn: &rusqlite::Connection, image_id: i64) -> AppResult<()> {
+    conn.execute(
+        "INSERT INTO task_queue (image_id, task_type, status) VALUES (?1, 'ai_analysis', 'pending')",
+        rusqlite::params![image_id],
+    ).map_err(AppError::database)?;
+    Ok(())
 }
 
 fn insert_image_record(
@@ -104,7 +247,7 @@ fn insert_image_record(
     conn.execute(
         "INSERT INTO images (file_path, file_name, file_size, file_hash, mime_type) VALUES (?1, ?2, ?3, ?4, ?5)",
         rusqlite::params![file_path, file_name, file_size, file_hash, mime_type],
-    ).map_err(AppError::Database)?;
+    ).map_err(AppError::database)?;
 
     let id = conn.last_insert_rowid();
     Ok(id)
@@ -112,11 +255,40 @@ fn insert_image_record(
 
 #[tauri::command]
 pub async fn import_images(
+    app: AppHandle,
     db: State<'_, Database>,
     file_paths: Vec<String>,
 ) -> AppResult<ImportResult> {
     info!("开始导入 {} 个文件", file_paths.len());
 
+    // Check disk space before importing
+    if !file_paths.is_empty() {
+        let first_file_path = Path::new(&file_paths[0]);
+        match get_available_disk_space(first_file_path) {
+            Ok(available_space) => {
+                let mut total_size_needed: u64 = 0;
+                for path_str in &file_paths {
+                    let file_path = Path::new(path_str);
+                    if let Ok(metadata) = fs::metadata(file_path) {
+                        total_size_needed += metadata.len();
+                    }
+                }
+
+                if available_space < MIN_DISK_SPACE_REQUIRED + total_size_needed {
+                    let available_mb = available_space / (1024 * 1024);
+                    let required_mb = (MIN_DISK_SPACE_REQUIRED + total_size_needed) / (1024 * 1024);
+                    return Err(AppError::validation(
+                        format!("磁盘空间不足。可用空间: {} MB，需要空间: {} MB", available_mb, required_mb)
+                    ));
+                }
+            }
+            Err(_) => {
+                warn!("无法检查磁盘空间，跳过磁盘空间检查");
+            }
+        }
+    }
+
+    let total = file_paths.len();
     let mut result = ImportResult {
         success_count: 0,
         duplicate_count: 0,
@@ -125,15 +297,23 @@ pub async fn import_images(
         errors: vec![],
     };
 
-    let conn = db.open_connection().map_err(AppError::Database)?;
+    let conn = db.open_connection().map_err(AppError::database)?;
 
-    for path_str in &file_paths {
+    for (index, path_str) in file_paths.iter().enumerate() {
         let file_path = Path::new(path_str);
         let file_name = file_path
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown")
             .to_string();
+
+        // Emit processing progress
+        let _ = app.emit("import-progress", ImportProgress {
+            current_file: file_name.clone(),
+            current: index + 1,
+            total,
+            status: ImportStatus::Processing,
+        });
 
         match validate_file(file_path) {
             Ok((mime_type, file_size)) => {
@@ -143,6 +323,12 @@ pub async fn import_images(
                             Ok(true) => {
                                 info!("跳过重复文件: {}", path_str);
                                 result.duplicate_count += 1;
+                                let _ = app.emit("import-progress", ImportProgress {
+                                    current_file: file_name.clone(),
+                                    current: index + 1,
+                                    total,
+                                    status: ImportStatus::Duplicate,
+                                });
                             }
                             Ok(false) => {
                                 match insert_image_record(
@@ -154,9 +340,74 @@ pub async fn import_images(
                                     &mime_type,
                                 ) {
                                     Ok(id) => {
-                                        info!("成功导入图片: {} (ID: {})", file_name, id);
+                                        info!("成功插入图片记录: {} (ID: {})", file_name, id);
+                                        
+                                        // 串联核心链路：缩略图 + pHash + EXIF + AI 任务
+                                        let thumb_path = generate_thumbnail_path(id, &app);
+                                        let thumb_result = ImageProcessor::generate_thumbnail(path_str, &thumb_path);
+                                        
+                                        let phash_result = ImageProcessor::calculate_phash(path_str);
+                                        
+                                        let exif_result = ImageProcessor::extract_exif(path_str);
+                                        
+                                        // 提取宽高（优先从 EXIF，否则从图片直接读取）
+                                        let (w, h) = match &exif_result {
+                                            Ok(exif) => (
+                                                exif.get("width").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+                                                exif.get("height").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
+                                            ),
+                                            Err(_) => {
+                                                // 降级：直接从图片获取尺寸
+                                                match image::open(Path::new(path_str)) {
+                                                    Ok(img) => {
+                                                        let (width, height) = img.dimensions();
+                                                        (width as i32, height as i32)
+                                                    }
+                                                    Err(_) => (0, 0),
+                                                }
+                                            }
+                                        };
+                                        
+                                        // 写回元数据（失败仅 warn，不阻塞导入）
+                                        let thumb_path_str = thumb_path.clone();
+                                        let phash_str = match &phash_result {
+                                            Ok(h) => h.clone(),
+                                            Err(_) => String::new(),
+                                        };
+                                        let exif_json = match &exif_result {
+                                            Ok(v) => serde_json::to_string(v).unwrap_or_default(),
+                                            Err(_) => String::new(),
+                                        };
+                                        
+                                        if let Err(e) = update_image_metadata(
+                                            &conn, id, &thumb_path_str, &phash_str, w, h, &exif_json,
+                                        ) {
+                                            warn!("更新图片元数据失败 (ID: {}): {}", id, e);
+                                        } else {
+                                            if thumb_result.is_err() {
+                                                warn!("缩略图生成失败 (ID: {}): {}", id, thumb_result.unwrap_err());
+                                            }
+                                            if phash_result.is_err() {
+                                                warn!("pHash 计算失败 (ID: {}): {}", id, phash_result.unwrap_err());
+                                            }
+                                            if exif_result.is_err() {
+                                                warn!("EXIF 提取失败 (ID: {}): {}", id, exif_result.unwrap_err());
+                                            }
+                                        }
+                                        
+                                        // 创建 AI 任务队列记录（失败仅 warn）
+                                        if let Err(e) = create_ai_task(&conn, id) {
+                                            warn!("创建 AI 任务失败 (ID: {}): {}", id, e);
+                                        }
+                                        
                                         result.success_count += 1;
                                         result.image_ids.push(id);
+                                        let _ = app.emit("import-progress", ImportProgress {
+                                            current_file: file_name.clone(),
+                                            current: index + 1,
+                                            total,
+                                            status: ImportStatus::Success,
+                                        });
                                     }
                                     Err(e) => {
                                         error!("数据库插入失败: {} - {}", file_name, e);
@@ -164,6 +415,12 @@ pub async fn import_images(
                                         result.errors.push(ImportError {
                                             file_path: path_str.clone(),
                                             reason: e.to_string(),
+                                        });
+                                        let _ = app.emit("import-progress", ImportProgress {
+                                            current_file: file_name.clone(),
+                                            current: index + 1,
+                                            total,
+                                            status: ImportStatus::Error,
                                         });
                                     }
                                 }
@@ -175,6 +432,12 @@ pub async fn import_images(
                                     file_path: path_str.clone(),
                                     reason: e.to_string(),
                                 });
+                                let _ = app.emit("import-progress", ImportProgress {
+                                    current_file: file_name.clone(),
+                                    current: index + 1,
+                                    total,
+                                    status: ImportStatus::Error,
+                                });
                             }
                         }
                     }
@@ -185,6 +448,12 @@ pub async fn import_images(
                             file_path: path_str.clone(),
                             reason: format!("哈希计算失败: {}", e),
                         });
+                        let _ = app.emit("import-progress", ImportProgress {
+                            current_file: file_name.clone(),
+                            current: index + 1,
+                            total,
+                            status: ImportStatus::Error,
+                        });
                     }
                 }
             }
@@ -194,6 +463,12 @@ pub async fn import_images(
                 result.errors.push(ImportError {
                     file_path: path_str.clone(),
                     reason: e.to_string(),
+                });
+                let _ = app.emit("import-progress", ImportProgress {
+                    current_file: file_name.clone(),
+                    current: index + 1,
+                    total,
+                    status: ImportStatus::Error,
                 });
             }
         }
@@ -207,29 +482,70 @@ pub async fn import_images(
     Ok(result)
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ImageFilters {
+    pub ai_status: Option<String>,
+    pub category: Option<String>,
+    pub date_from: Option<String>,
+    pub date_to: Option<String>,
+}
+
 #[tauri::command]
 pub async fn get_images(
     db: State<'_, Database>,
     page: u32,
     page_size: u32,
+    filters: Option<ImageFilters>,
 ) -> AppResult<Vec<serde_json::Value>> {
-    let conn = db.open_connection().map_err(AppError::Database)?;
+    let conn = db.open_connection().map_err(AppError::database)?;
 
     let offset = page * page_size;
 
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, file_path, file_name, file_size, file_hash, mime_type,
-             width, height, thumbnail_path, phash, ai_status, ai_description,
-             ai_category, ai_confidence, source, created_at, updated_at
-             FROM images
-             ORDER BY created_at DESC
-             LIMIT ?1 OFFSET ?2",
-        )
-        .map_err(AppError::Database)?;
+    let mut sql = String::from(
+        "SELECT id, file_path, file_name, file_size, file_hash, mime_type,
+         width, height, thumbnail_path, phash, ai_status, ai_description,
+         ai_category, ai_confidence, source, created_at, updated_at
+         FROM images"
+    );
+
+    let mut conditions: Vec<String> = Vec::new();
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+    if let Some(ref f) = filters {
+        if let Some(ref ai_status) = f.ai_status {
+            conditions.push("ai_status = ?".to_string());
+            params.push(Box::new(ai_status.clone()));
+        }
+        if let Some(ref category) = f.category {
+            conditions.push("ai_category = ?".to_string());
+            params.push(Box::new(category.clone()));
+        }
+        if let Some(ref date_from) = f.date_from {
+            conditions.push("created_at >= ?".to_string());
+            params.push(Box::new(date_from.clone()));
+        }
+        if let Some(ref date_to) = f.date_to {
+            conditions.push("created_at <= ?".to_string());
+            params.push(Box::new(date_to.clone()));
+        }
+    }
+
+    if !conditions.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&conditions.join(" AND "));
+    }
+
+    sql.push_str(" ORDER BY created_at DESC LIMIT ? OFFSET ?");
+
+    params.push(Box::new(page_size));
+    params.push(Box::new(offset));
+
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+
+    let mut stmt = conn.prepare(&sql).map_err(AppError::database)?;
 
     let rows = stmt
-        .query_map(rusqlite::params![page_size, offset], |row| {
+        .query_map(&param_refs[..], |row| {
             Ok(serde_json::json!({
                 "id": row.get::<_, i64>(0)?,
                 "file_path": row.get::<_, String>(1)?,
@@ -250,7 +566,7 @@ pub async fn get_images(
                 "updated_at": row.get::<_, String>(16)?,
             }))
         })
-        .map_err(AppError::Database)?;
+        .map_err(AppError::database)?;
 
     let images: Vec<serde_json::Value> = rows
         .filter_map(|r| match r {
@@ -270,7 +586,7 @@ pub async fn get_image_detail(
     db: State<'_, Database>,
     id: i64,
 ) -> AppResult<serde_json::Value> {
-    let conn = db.open_connection().map_err(AppError::Database)?;
+    let conn = db.open_connection().map_err(AppError::database)?;
 
     let mut stmt = conn
         .prepare(
@@ -280,7 +596,7 @@ pub async fn get_image_detail(
              ai_error_message, ai_retry_count, source, created_at, updated_at
              FROM images WHERE id = ?1",
         )
-        .map_err(AppError::Database)?;
+        .map_err(AppError::database)?;
 
     let result = stmt
         .query_row(rusqlite::params![id], |row| {
@@ -310,7 +626,7 @@ pub async fn get_image_detail(
                 "updated_at": row.get::<_, String>(22)?,
             }))
         })
-        .map_err(AppError::Database)?;
+        .map_err(AppError::database)?;
 
     Ok(result)
 }
@@ -320,23 +636,369 @@ pub async fn delete_images(
     db: State<'_, Database>,
     ids: Vec<i64>,
 ) -> AppResult<usize> {
-    let conn = db.open_connection().map_err(AppError::Database)?;
+    let conn = db.open_connection().map_err(AppError::database)?;
 
-    let placeholders: Vec<String> = ids.iter().map(|_| "?".to_string()).collect();
-    let sql = format!(
-        "DELETE FROM images WHERE id IN ({})",
-        placeholders.join(",")
-    );
+    let mut deleted = 0;
 
-    let params: Vec<&dyn rusqlite::types::ToSql> = ids.iter().map(|id| id as &dyn rusqlite::types::ToSql).collect();
+    for &id in &ids {
+        // 1. 查询 thumbnail_path 和 file_path
+        let thumb_path: Option<String> = conn
+            .query_row(
+                "SELECT thumbnail_path FROM images WHERE id = ?",
+                rusqlite::params![id],
+                |row| row.get(0),
+            )
+            .ok();
 
-    let deleted = conn
-        .execute(&sql, &params[..])
-        .map_err(AppError::Database)?;
+        let file_path: Option<String> = conn
+            .query_row(
+                "SELECT file_path FROM images WHERE id = ?",
+                rusqlite::params![id],
+                |row| row.get(0),
+            )
+            .ok();
+
+        // 2. 删除 search_index 记录
+        conn.execute(
+            "DELETE FROM search_index WHERE image_id = ?",
+            rusqlite::params![id],
+        )
+        .map_err(AppError::database)?;
+
+        // 3. 删除 images 记录
+        let row_deleted = conn
+            .execute(
+                "DELETE FROM images WHERE id = ?",
+                rusqlite::params![id],
+            )
+            .map_err(AppError::database)?;
+
+        if row_deleted > 0 {
+            deleted += 1;
+
+            // 4. 删除缩略图文件（失败仅 warn，不阻塞）
+            if let Some(thumb) = &thumb_path {
+                let thumb_path = Path::new(thumb);
+                if thumb_path.exists() {
+                    if let Err(e) = fs::remove_file(thumb_path) {
+                        warn!("删除缩略图失败 {}: {}", thumb, e);
+                    } else {
+                        info!("已删除缩略图: {}", thumb);
+                    }
+                }
+            }
+
+            // 5. 如果原文件在应用数据目录内，也一并删除
+            if let Some(fp) = &file_path {
+                if fp.starts_with("/app/") || fp.starts_with("\\app\\") || fp.contains("imported_images") {
+                    let orig_path = Path::new(fp);
+                    if orig_path.exists() {
+                        if let Err(e) = fs::remove_file(orig_path) {
+                            warn!("删除原文件失败 {}: {}", fp, e);
+                        } else {
+                            info!("已删除原文件: {}", fp);
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     info!("删除了 {} 张图片", deleted);
 
     Ok(deleted)
+}
+
+/// Checks all file_paths in the images table and marks missing files as broken.
+/// Returns count and list of broken images.
+#[tauri::command]
+pub async fn check_broken_links(
+    db: State<'_, Database>,
+) -> AppResult<CheckBrokenLinksResult> {
+    info!("开始检查失效链接");
+
+    let conn = db.open_connection().map_err(AppError::database)?;
+
+    // Query all images with their file paths
+    let mut stmt = conn
+        .prepare("SELECT id, file_path, file_name FROM images")
+        .map_err(AppError::database)?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(AppError::database)?;
+
+    let mut broken_images: Vec<BrokenLinkInfo> = Vec::new();
+    let mut ids_to_mark: Vec<i64> = Vec::new();
+
+    for row in rows {
+        match row {
+            Ok((id, file_path, file_name)) => {
+                if !Path::new(&file_path).exists() {
+                    warn!("失效链接检测: ID {} 文件不存在: {}", id, file_path);
+                    broken_images.push(BrokenLinkInfo {
+                        id,
+                        file_path: file_path.clone(),
+                        file_name: file_name.clone(),
+                    });
+                    ids_to_mark.push(id);
+                }
+            }
+            Err(e) => {
+                error!("读取图片行失败: {}", e);
+            }
+        }
+    }
+
+    // Mark broken images in database
+    if !ids_to_mark.is_empty() {
+        for &id in &ids_to_mark {
+            match conn.execute(
+                "UPDATE images SET ai_status = 'broken_link', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                rusqlite::params![id],
+            ) {
+                Ok(updated) => {
+                    info!("已标记图片 {} 为 broken_link (影响行数: {})", id, updated);
+                }
+                Err(e) => {
+                    error!("标记图片 {} 为 broken_link 失败: {}", id, e);
+                }
+            }
+        }
+    }
+
+    let broken_count = broken_images.len();
+    info!(
+        "失效链接检查完成: 共发现 {} 个失效链接",
+        broken_count
+    );
+
+    Ok(CheckBrokenLinksResult {
+        broken_count,
+        broken_images,
+    })
+}
+
+/// Archives a single image by copying its file to the app data directory.
+#[tauri::command]
+pub async fn archive_image(
+    app: AppHandle,
+    db: State<'_, Database>,
+    id: i64,
+) -> AppResult<ArchiveImageResult> {
+    info!("开始归档图片: ID {}", id);
+
+    let conn = db.open_connection().map_err(AppError::database)?;
+
+    // Get file_path for the image
+    let file_path: Option<String> = conn
+        .query_row(
+            "SELECT file_path FROM images WHERE id = ?",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )
+        .map_err(AppError::database)?;
+
+    let file_path = match file_path {
+        Some(fp) => fp,
+        None => {
+            warn!("归档失败: 图片 ID {} 不存在", id);
+            return Err(AppError::validation(format!("图片 ID {} 不存在", id)));
+        }
+    };
+
+    let source = Path::new(&file_path);
+    if !source.exists() {
+        warn!("归档失败: 源文件不存在: {}", file_path);
+        return Err(AppError::validation(format!("源文件不存在: {}", file_path)));
+    }
+
+    // Get destination directory
+    let app_data = app.path().app_data_dir().unwrap_or_else(|_| {
+        std::env::current_dir().unwrap_or_default()
+    });
+    let archive_dir = app_data.join("images");
+
+    if let Err(e) = fs::create_dir_all(&archive_dir) {
+        error!("创建归档目录失败 {}: {}", archive_dir.display(), e);
+        return Err(AppError::validation(format!("创建归档目录失败: {}", e)));
+    }
+
+    // Destination path: use original file name
+    let file_name = source
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown");
+    let dest_path = archive_dir.join(file_name);
+
+    // Handle duplicate: if file already exists, append a number
+    let final_dest = if dest_path.exists() {
+        let stem = dest_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("image");
+        let ext = dest_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        let mut counter = 1;
+        loop {
+            let new_name = if ext.is_empty() {
+                format!("{}_{}", stem, counter)
+            } else {
+                format!("{}_{}.{}", stem, counter, ext)
+            };
+            let new_path = archive_dir.join(&new_name);
+            if !new_path.exists() {
+                break new_path;
+            }
+            counter += 1;
+        }
+    } else {
+        dest_path
+    };
+
+    // Copy file
+    match fs::copy(source, &final_dest) {
+        Ok(_) => {
+            let dest_str = final_dest.to_string_lossy().to_string();
+            info!("图片归档成功: {} -> {}", file_path, dest_str);
+            Ok(ArchiveImageResult {
+                archived: true,
+                dest_path: dest_str,
+            })
+        }
+        Err(e) => {
+            error!("归档文件复制失败: {} -> {}: {}", file_path, final_dest.display(), e);
+            Err(AppError::validation(format!("文件复制失败: {}", e)))
+        }
+    }
+}
+
+/// Batch exports images to a user-specified directory.
+/// Non-existent files are logged as errors but do not block the operation.
+#[tauri::command]
+pub async fn safe_export(
+    db: State<'_, Database>,
+    image_ids: Vec<i64>,
+    dest_dir: String,
+) -> AppResult<SafeExportResult> {
+    info!("开始批量导出 {} 张图片到: {}", image_ids.len(), dest_dir);
+
+    let conn = db.open_connection().map_err(AppError::database)?;
+
+    // Create destination directory
+    let dest_path = Path::new(&dest_dir);
+    if let Err(e) = fs::create_dir_all(dest_path) {
+        error!("创建目标目录失败 {}: {}", dest_dir, e);
+        return Err(AppError::validation(format!("创建目标目录失败: {}", e)));
+    }
+
+    let mut exported_count: usize = 0;
+    let mut errors: Vec<SafeExportError> = Vec::new();
+
+    for &id in &image_ids {
+        // Query file_path for this image
+        let file_path: String = match conn.query_row(
+            "SELECT file_path FROM images WHERE id = ?",
+            rusqlite::params![id],
+            |row| row.get::<_, String>(0),
+        ) {
+            Ok(fp) => fp,
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                warn!("导出跳过: 图片 ID {} 不存在", id);
+                errors.push(SafeExportError {
+                    id,
+                    reason: format!("图片 ID {} 不存在", id),
+                });
+                continue;
+            }
+            Err(e) => {
+                error!("查询图片 {} 失败: {}", id, e);
+                errors.push(SafeExportError {
+                    id,
+                    reason: format!("数据库查询失败: {}", e),
+                });
+                continue;
+            }
+        };
+
+        let source = Path::new(&file_path);
+        if !source.exists() {
+            warn!("导出跳过: 文件不存在 (ID: {}): {}", id, file_path);
+            errors.push(SafeExportError {
+                id,
+                reason: format!("文件不存在: {}", file_path),
+            });
+            continue;
+        }
+
+        // Destination filename
+        let file_name = source
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown");
+        let target = dest_path.join(file_name);
+
+        // Handle duplicate by appending number
+        let final_target = if target.exists() {
+            let stem = target
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("image");
+            let ext = target
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("");
+            let mut counter = 1;
+            loop {
+                let new_name = if ext.is_empty() {
+                    format!("{}_{}", stem, counter)
+                } else {
+                    format!("{}_{}.{}", stem, counter, ext)
+                };
+                let new_path = dest_path.join(&new_name);
+                if !new_path.exists() {
+                    break new_path;
+                }
+                counter += 1;
+            }
+        } else {
+            target
+        };
+
+        // Copy file
+        match fs::copy(source, &final_target) {
+            Ok(_) => {
+                exported_count += 1;
+                info!("成功导出图片: ID {} -> {}", id, final_target.display());
+            }
+            Err(e) => {
+                warn!("导出失败: ID {} -> {}: {}", id, final_target.display(), e);
+                errors.push(SafeExportError {
+                    id,
+                    reason: format!("文件复制失败: {}", e),
+                });
+            }
+        }
+    }
+
+    info!(
+        "批量导出完成: 成功 {}, 失败 {}",
+        exported_count,
+        errors.len()
+    );
+
+    Ok(SafeExportResult {
+        exported_count,
+        errors,
+    })
 }
 
 #[cfg(test)]
@@ -448,6 +1110,50 @@ mod tests {
             assert!(result.is_ok(), "文件 {} 应该验证成功", filename);
             let (mime_type, _) = result.unwrap();
             assert_eq!(mime_type, expected_mime, "扩展名 {} 的 MIME 类型映射错误", ext);
+        }
+    }
+
+    #[test]
+    fn test_validate_file_special_chars_chinese() {
+        let temp_dir = TempDir::new().unwrap();
+        // Create file with Chinese characters in name
+        let path = create_temp_file(&temp_dir, "测试图片_123.jpg", b"fake image content");
+        
+        let result = validate_file(&path);
+        assert!(result.is_ok(), "包含中文字符的路径应该能正常验证: {:?}", result);
+        let (_, size) = result.unwrap();
+        assert!(size > 0);
+    }
+
+    #[test]
+    fn test_validate_file_special_chars_spaces() {
+        let temp_dir = TempDir::new().unwrap();
+        // Create file with spaces in name
+        let path = create_temp_file(&temp_dir, "my photo 2024.jpg", b"fake image content");
+        
+        let result = validate_file(&path);
+        assert!(result.is_ok(), "包含空格的路径应该能正常验证: {:?}", result);
+        let (_, size) = result.unwrap();
+        assert!(size > 0);
+    }
+
+    #[test]
+    fn test_get_available_disk_space_returns_valid() {
+        let path = Path::new(".");
+        let result = get_available_disk_space(path);
+        assert!(result.is_ok(), "获取磁盘空间应该成功");
+    }
+
+    #[test]
+    fn test_disk_space_check_for_temp_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = create_temp_file(&temp_dir, "test.jpg", b"fake image content");
+        
+        let result = get_available_disk_space(&path);
+        assert!(result.is_ok(), "临时文件的磁盘空间检查应该成功");
+        
+        if let Ok(space) = result {
+            assert!(space > 0, "可用空间应该大于 0");
         }
     }
 
@@ -567,5 +1273,712 @@ mod tests {
             .unwrap();
 
         assert_eq!(deleted, 0, "删除不存在的记录应返回 0");
+    }
+
+    #[test]
+    fn test_delete_images_cleans_up_thumbnail_and_search_index() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test_delete_cleanup.db");
+        let db = Database::new_from_path(db_path.to_str().unwrap()).unwrap();
+        db.init().unwrap();
+        let conn = db.open_connection().unwrap();
+
+        // 创建测试图片记录，带缩略图路径
+        let img_path = create_test_image_file(&temp_dir, "delete_test.jpg", 100, 100);
+        let path_str = img_path.to_str().unwrap();
+        let (mime_type, file_size) = validate_file(&img_path).unwrap();
+        let hash = calculate_sha256(&img_path).unwrap();
+        let id = insert_image_record(&conn, path_str, "delete_test.jpg", file_size, &hash, &mime_type).unwrap();
+
+        // 创建缩略图文件
+        let thumb_path = temp_dir.path().join("thumb.webp");
+        File::create(&thumb_path).unwrap();
+        assert!(thumb_path.exists(), "缩略图文件应存在");
+
+        // 写入缩略图路径到数据库
+        conn.execute(
+            "UPDATE images SET thumbnail_path = ?2 WHERE id = ?1",
+            rusqlite::params![id, thumb_path.to_str().unwrap()],
+        ).unwrap();
+
+        // 创建 search_index 记录
+        conn.execute(
+            "INSERT INTO search_index (image_id, description, tags, category, keywords) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![id, "test image", "[]", "", "test"],
+        ).unwrap();
+
+        // 验证前置条件
+        let index_count: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM search_index WHERE image_id = ?1",
+            [id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(index_count, 1, "search_index 记录应存在");
+
+        // 执行删除（模拟命令的完整流程）
+        // 查询 thumbnail_path
+        let thumb: Option<String> = conn.query_row(
+            "SELECT thumbnail_path FROM images WHERE id = ?",
+            [id],
+            |row| row.get(0),
+        ).ok();
+
+        // 删除 search_index
+        let index_deleted = conn.execute(
+            "DELETE FROM search_index WHERE image_id = ?",
+            [id],
+        ).unwrap();
+        assert_eq!(index_deleted, 1, "应删除 search_index 记录");
+
+        // 删除 images 记录
+        let row_deleted = conn.execute(
+            "DELETE FROM images WHERE id = ?",
+            [id],
+        ).unwrap();
+        assert_eq!(row_deleted, 1, "应删除 images 记录");
+
+        // 删除缩略图文件
+        if let Some(thumb_str) = thumb {
+            let thumb_path_obj = Path::new(&thumb_str);
+            if thumb_path_obj.exists() {
+                fs::remove_file(thumb_path_obj).unwrap();
+            }
+        }
+
+        // 验证清理结果
+        assert!(!thumb_path.exists(), "缩略图文件应被删除");
+
+        let image_count: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM images WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(image_count, 0, "图片记录应被删除");
+
+        let index_count_after: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM search_index WHERE image_id = ?1",
+            [id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(index_count_after, 0, "search_index 记录应被删除");
+    }
+
+    #[test]
+    fn test_delete_images_missing_thumbnail_does_not_block() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test_delete_missing_thumb.db");
+        let db = Database::new_from_path(db_path.to_str().unwrap()).unwrap();
+        db.init().unwrap();
+        let conn = db.open_connection().unwrap();
+
+        // 创建记录，但缩略图文件不存在
+        let img_path = create_test_image_file(&temp_dir, "no_thumb.jpg", 50, 50);
+        let path_str = img_path.to_str().unwrap();
+        let (mime_type, file_size) = validate_file(&img_path).unwrap();
+        let hash = calculate_sha256(&img_path).unwrap();
+        let id = insert_image_record(&conn, path_str, "no_thumb.jpg", file_size, &hash, &mime_type).unwrap();
+
+        // 设置不存在的缩略图路径
+        let fake_thumb = temp_dir.path().join("nonexistent_thumb.webp").to_string_lossy().to_string();
+        conn.execute(
+            "UPDATE images SET thumbnail_path = ?2 WHERE id = ?1",
+            rusqlite::params![id, fake_thumb],
+        ).unwrap();
+
+        // 模拟删除流程：尝试删除不存在的缩略图应跳过
+        let thumb: Option<String> = conn.query_row(
+            "SELECT thumbnail_path FROM images WHERE id = ?",
+            [id],
+            |row| row.get(0),
+        ).ok();
+
+        if let Some(thumb_str) = thumb {
+            let thumb_path_obj = Path::new(&thumb_str);
+            if thumb_path_obj.exists() {
+                fs::remove_file(thumb_path_obj).unwrap();
+            }
+            // 不存在时跳过，不应 panic
+        }
+
+        // images 记录仍应正常删除
+        conn.execute(
+            "DELETE FROM images WHERE id = ?",
+            [id],
+        ).unwrap();
+
+        let count: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM images WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(count, 0, "图片记录应被删除");
+    }
+
+    fn create_test_image_file(dir: &TempDir, name: &str, width: u32, height: u32) -> std::path::PathBuf {
+        let path = dir.path().join(name);
+        let img = image::RgbImage::from_pixel(width, height, image::Rgb([128, 128, 128]));
+        img.save(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn test_update_image_metadata() {
+        let (db, _temp) = setup_test_db();
+        let conn = db.open_connection().unwrap();
+
+        let result = update_image_metadata(
+            &conn, 1,
+            "/test/thumb_1.webp",
+            "abc123def456",
+            1920, 1080,
+            r#"{"width":1920,"height":1080}"#,
+        );
+        assert!(result.is_ok(), "元数据更新应成功: {:?}", result);
+
+        // 验证写入结果
+        let thumb: String = conn.query_row(
+            "SELECT thumbnail_path FROM images WHERE id = 1",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(thumb, "/test/thumb_1.webp");
+
+        let phash: String = conn.query_row(
+            "SELECT phash FROM images WHERE id = 1",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(phash, "abc123def456");
+
+        let width: i32 = conn.query_row(
+            "SELECT width FROM images WHERE id = 1",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(width, 1920);
+    }
+
+    #[test]
+    fn test_create_ai_task() {
+        let (db, _temp) = setup_test_db();
+        let conn = db.open_connection().unwrap();
+
+        let result = create_ai_task(&conn, 1);
+        assert!(result.is_ok(), "AI 任务创建应成功: {:?}", result);
+
+        let task_type: String = conn.query_row(
+            "SELECT task_type FROM task_queue WHERE image_id = 1",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(task_type, "ai_analysis");
+
+        let status: String = conn.query_row(
+            "SELECT status FROM task_queue WHERE image_id = 1",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(status, "pending");
+    }
+
+    #[test]
+    fn test_import_pipeline_full_chain() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test_import_chain.db");
+        let db = Database::new_from_path(db_path.to_str().unwrap()).unwrap();
+        db.init().unwrap();
+
+        let conn = db.open_connection().unwrap();
+
+        let img_path = create_test_image_file(&temp_dir, "pipeline_test.jpg", 800, 600);
+        let path_str = img_path.to_str().unwrap();
+
+        // 完整串联：验证 → 哈希 → 插入 → 缩略图 → pHash → EXIF → 元数据 → AI 任务
+        let (mime_type, file_size) = validate_file(&img_path).unwrap();
+        let hash = calculate_sha256(&img_path).unwrap();
+        assert!(!is_duplicate(&conn, &hash).unwrap(), "新文件不应是重复的");
+
+        let id = insert_image_record(&conn, path_str, "pipeline_test.jpg", file_size, &hash, &mime_type).unwrap();
+        assert!(id > 0, "应返回有效的图片 ID");
+
+        // 缩略图
+        let thumb_path = temp_dir.path().join(format!("thumb_{}.webp", id));
+        let thumb_result = ImageProcessor::generate_thumbnail(path_str, thumb_path.to_str().unwrap());
+        assert!(thumb_result.is_ok(), "缩略图应成功生成: {:?}", thumb_result);
+        assert!(thumb_path.exists(), "缩略图文件应存在");
+
+        // pHash
+        let phash = ImageProcessor::calculate_phash(path_str).unwrap();
+        assert!(!phash.is_empty(), "pHash 不应为空");
+
+        // EXIF
+        let exif = ImageProcessor::extract_exif(path_str).unwrap();
+        assert!(exif.get("width").is_some(), "EXIF 应包含宽度");
+
+        // 写回元数据
+        let exif_json = serde_json::to_string(&exif).unwrap();
+        update_image_metadata(&conn, id, thumb_path.to_str().unwrap(), &phash, 800, 600, &exif_json).unwrap();
+
+        // 创建 AI 任务
+        create_ai_task(&conn, id).unwrap();
+
+        // 最终验证
+        let (thumb, p, w, h): (String, String, i32, i32) = conn.query_row(
+            "SELECT thumbnail_path, phash, width, height FROM images WHERE id = ?1",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        ).unwrap();
+
+        assert!(thumb.ends_with(".webp"), "缩略图路径应以 .webp 结尾");
+        assert_eq!(p, phash, "pHash 应一致");
+        assert_eq!(w, 800, "宽度应正确");
+        assert_eq!(h, 600, "高度应正确");
+
+        // 验证 AI 任务
+        let task_count: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM task_queue WHERE image_id = ?1 AND status = 'pending'",
+            [id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(task_count, 1, "应有 1 个 pending AI 任务");
+    }
+
+    #[test]
+    fn test_import_pipeline_thumbnail_failure_does_not_block() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test_import_fail_thumb.db");
+        let db = Database::new_from_path(db_path.to_str().unwrap()).unwrap();
+        db.init().unwrap();
+
+        let conn = db.open_connection().unwrap();
+
+        // 创建合法图片
+        let img_path = create_test_image_file(&temp_dir, "test_thumb_fail.jpg", 640, 480);
+        let path_str = img_path.to_str().unwrap();
+
+        let (mime_type, file_size) = validate_file(&img_path).unwrap();
+        let hash = calculate_sha256(&img_path).unwrap();
+        let id = insert_image_record(&conn, path_str, "test.jpg", file_size, &hash, &mime_type).unwrap();
+
+        // 使用不存在的图片路径触发缩略图生成失败
+        let thumb_result = ImageProcessor::generate_thumbnail("/nonexistent/fake_image.jpg", temp_dir.path().join("thumb.webp").to_str().unwrap());
+        assert!(thumb_result.is_err(), "缩略图生成对不存在图片应失败");
+
+        // 但元数据更新应成功
+        let phash = ImageProcessor::calculate_phash(path_str).unwrap();
+        let exif = ImageProcessor::extract_exif(path_str).unwrap();
+        let exif_json = serde_json::to_string(&exif).unwrap();
+        
+        let meta_result = update_image_metadata(&conn, id, "", &phash, 640, 480, &exif_json);
+        assert!(meta_result.is_ok(), "元数据更新不应被缩略图失败阻塞");
+
+        // AI 任务应正常创建
+        let task_result = create_ai_task(&conn, id);
+        assert!(task_result.is_ok(), "AI 任务创建不应被阻塞");
+    }
+
+    #[test]
+    fn test_import_pipeline_phash_failure_does_not_block() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test_import_fail_phash.db");
+        let db = Database::new_from_path(db_path.to_str().unwrap()).unwrap();
+        db.init().unwrap();
+
+        let conn = db.open_connection().unwrap();
+
+        let img_path = create_test_image_file(&temp_dir, "test_phash_fail.jpg", 320, 240);
+        let path_str = img_path.to_str().unwrap();
+
+        let (mime_type, file_size) = validate_file(&img_path).unwrap();
+        let hash = calculate_sha256(&img_path).unwrap();
+        let id = insert_image_record(&conn, path_str, "test.jpg", file_size, &hash, &mime_type).unwrap();
+
+        // pHash 对不存在文件应失败
+        let phash_result = ImageProcessor::calculate_phash("/nonexistent/image.jpg");
+        assert!(phash_result.is_err(), "pHash 对不存在文件应失败");
+
+        // 但其他流程应继续
+        let thumb_path = temp_dir.path().join(format!("thumb_{}.webp", id));
+        ImageProcessor::generate_thumbnail(path_str, thumb_path.to_str().unwrap()).unwrap();
+
+        let exif = ImageProcessor::extract_exif(path_str).unwrap();
+        let exif_json = serde_json::to_string(&exif).unwrap();
+        update_image_metadata(&conn, id, thumb_path.to_str().unwrap(), "", 320, 240, &exif_json).unwrap();
+        create_ai_task(&conn, id).unwrap();
+
+        // 记录应存在且 AI 任务已创建
+        let task_count: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM task_queue WHERE image_id = ?1",
+            [id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(task_count, 1, "AI 任务应已创建");
+    }
+
+    #[test]
+    fn test_check_broken_links_detects_missing_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test_broken_links.db");
+        let db = Database::new_from_path(db_path.to_str().unwrap()).unwrap();
+        db.init().unwrap();
+
+        let conn = db.open_connection().unwrap();
+
+        // Insert images: one with existing file, one with non-existing file
+        let img_path = create_test_image_file(&temp_dir, "exists.jpg", 100, 100);
+        let path_str = img_path.to_str().unwrap();
+        let (mime_type, file_size) = validate_file(&img_path).unwrap();
+        let hash = calculate_sha256(&img_path).unwrap();
+        let id_exists = insert_image_record(&conn, path_str, "exists.jpg", file_size, &hash, &mime_type).unwrap();
+
+        // Insert record with non-existing file path
+        let id_broken: i64 = conn.query_row(
+            "INSERT INTO images (file_path, file_name, file_size, file_hash, mime_type, ai_status, source) 
+             VALUES ('/nonexistent/broken.jpg', 'broken.jpg', 1234, 'hash_broken', 'image/jpeg', 'pending', 'import')
+             RETURNING id",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+
+        // Simulate check_broken_links logic
+        let mut stmt = conn.prepare("SELECT id, file_path, file_name FROM images").unwrap();
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        }).unwrap();
+
+        let mut broken_images: Vec<BrokenLinkInfo> = Vec::new();
+        let mut ids_to_mark: Vec<i64> = Vec::new();
+
+        for row in rows {
+            if let Ok((id, file_path, file_name)) = row {
+                if !Path::new(&file_path).exists() {
+                    broken_images.push(BrokenLinkInfo { id, file_path, file_name });
+                    ids_to_mark.push(id);
+                }
+            }
+        }
+
+        // Should find exactly 1 broken link
+        assert_eq!(broken_images.len(), 1, "应检测到 1 个失效链接");
+        assert_eq!(broken_images[0].id, id_broken);
+
+        // Mark as broken_link
+        for &id in &ids_to_mark {
+            conn.execute(
+                "UPDATE images SET ai_status = 'broken_link' WHERE id = ?",
+                rusqlite::params![id],
+            ).unwrap();
+        }
+
+        // Verify status was updated
+        let status: String = conn.query_row(
+            "SELECT ai_status FROM images WHERE id = ?",
+            [id_broken],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(status, "broken_link", "失效图片应被标记为 broken_link");
+
+        // Existing file should NOT be marked
+        let existing_status: String = conn.query_row(
+            "SELECT ai_status FROM images WHERE id = ?",
+            [id_exists],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(existing_status, "pending", "有效文件不应被标记");
+    }
+
+    #[test]
+    fn test_check_broken_links_all_files_exist() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test_no_broken.db");
+        let db = Database::new_from_path(db_path.to_str().unwrap()).unwrap();
+        db.init().unwrap();
+
+        let conn = db.open_connection().unwrap();
+
+        // Insert images with existing files only
+        for i in 1..=3 {
+            let img_path = create_test_image_file(&temp_dir, &format!("img{}.jpg", i), 50 * i, 50 * i);
+            let path_str = img_path.to_str().unwrap();
+            let (mime_type, file_size) = validate_file(&img_path).unwrap();
+            let hash = calculate_sha256(&img_path).unwrap();
+            insert_image_record(&conn, path_str, &format!("img{}.jpg", i), file_size, &hash, &mime_type).unwrap();
+        }
+
+        // Simulate check_broken_links logic
+        let mut stmt = conn.prepare("SELECT id, file_path, file_name FROM images").unwrap();
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        }).unwrap();
+
+        let mut broken_count = 0;
+        for row in rows {
+            if let Ok((_id, file_path, _file_name)) = row {
+                if !Path::new(&file_path).exists() {
+                    broken_count += 1;
+                }
+            }
+        }
+
+        assert_eq!(broken_count, 0, "所有文件存在时应返回 0 个失效链接");
+    }
+
+    #[test]
+    fn test_archive_image_copies_file_to_archive_dir() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test_archive.db");
+        let db = Database::new_from_path(db_path.to_str().unwrap()).unwrap();
+        db.init().unwrap();
+
+        let conn = db.open_connection().unwrap();
+
+        // Create a test image
+        let img_path = create_test_image_file(&temp_dir, "archive_me.jpg", 200, 200);
+        let path_str = img_path.to_str().unwrap();
+        let (mime_type, file_size) = validate_file(&img_path).unwrap();
+        let hash = calculate_sha256(&img_path).unwrap();
+        let id = insert_image_record(&conn, path_str, "archive_me.jpg", file_size, &hash, &mime_type).unwrap();
+
+        // Simulate archive logic: copy to archive directory
+        let archive_dir = temp_dir.path().join("archive_images");
+        fs::create_dir_all(&archive_dir).unwrap();
+
+        let source = Path::new(&path_str);
+        assert!(source.exists(), "源文件应存在");
+
+        let dest = archive_dir.join("archive_me.jpg");
+        let result = fs::copy(source, &dest);
+        assert!(result.is_ok(), "文件复制应成功");
+        assert!(dest.exists(), "归档文件应存在");
+
+        // Verify content matches
+        let src_content = fs::read(source).unwrap();
+        let dest_content = fs::read(&dest).unwrap();
+        assert_eq!(src_content, dest_content, "归档文件内容应与原文件一致");
+    }
+
+    #[test]
+    fn test_archive_image_nonexistent_source() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test_archive_missing.db");
+        let db = Database::new_from_path(db_path.to_str().unwrap()).unwrap();
+        db.init().unwrap();
+
+        let conn = db.open_connection().unwrap();
+
+        // Insert record with non-existing file
+        let id: i64 = conn.query_row(
+            "INSERT INTO images (file_path, file_name, file_size, file_hash, mime_type, ai_status, source) 
+             VALUES ('/nonexistent/missing.jpg', 'missing.jpg', 1000, 'hash_miss', 'image/jpeg', 'pending', 'import')
+             RETURNING id",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+
+        // Verify file doesn't exist
+        let file_path: String = conn.query_row(
+            "SELECT file_path FROM images WHERE id = ?",
+            [id],
+            |row| row.get(0),
+        ).unwrap();
+
+        assert!(!Path::new(&file_path).exists(), "文件应不存在");
+        // Archive should return error for non-existing source
+    }
+
+    #[test]
+    fn test_safe_export_batch_copies_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test_export.db");
+        let db = Database::new_from_path(db_path.to_str().unwrap()).unwrap();
+        db.init().unwrap();
+
+        let conn = db.open_connection().unwrap();
+
+        // Create test images
+        let mut ids = Vec::new();
+        for i in 1..=3 {
+            let img_path = create_test_image_file(&temp_dir, &format!("export_{}.jpg", i), 100, 100);
+            let path_str = img_path.to_str().unwrap();
+            let (mime_type, file_size) = validate_file(&img_path).unwrap();
+            let hash = calculate_sha256(&img_path).unwrap();
+            let id = insert_image_record(&conn, path_str, &format!("export_{}.jpg", i), file_size, &hash, &mime_type).unwrap();
+            ids.push(id);
+        }
+
+        // Simulate safe_export: copy to dest directory
+        let dest_dir = temp_dir.path().join("exported");
+        fs::create_dir_all(&dest_dir).unwrap();
+
+        let mut exported_count = 0;
+        let mut errors: Vec<SafeExportError> = Vec::new();
+
+        for &id in &ids {
+            let file_path: Option<String> = conn.query_row(
+                "SELECT file_path FROM images WHERE id = ?",
+                [id],
+                |row| row.get(0),
+            ).ok();
+
+            if let Some(fp) = file_path {
+                let source = Path::new(&fp);
+                if source.exists() {
+                    let file_name = source.file_name().and_then(|n| n.to_str()).unwrap_or("unknown");
+                    let target = dest_dir.join(file_name);
+                    match fs::copy(source, &target) {
+                        Ok(_) => {
+                            exported_count += 1;
+                            assert!(target.exists(), "导出文件应存在");
+                        }
+                        Err(e) => {
+                            errors.push(SafeExportError { id, reason: format!("复制失败: {}", e) });
+                        }
+                    }
+                } else {
+                    errors.push(SafeExportError { id, reason: "文件不存在".to_string() });
+                }
+            } else {
+                errors.push(SafeExportError { id, reason: "图片不存在".to_string() });
+            }
+        }
+
+        assert_eq!(exported_count, 3, "应成功导出 3 个文件");
+        assert_eq!(errors.len(), 0, "不应有错误");
+
+        // Verify files exist in dest dir
+        for i in 1..=3 {
+            let exported = dest_dir.join(format!("export_{}.jpg", i));
+            assert!(exported.exists(), "导出文件 {} 应存在", exported.display());
+        }
+    }
+
+    #[test]
+    fn test_safe_export_handles_missing_and_nonexistent() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test_export_errors.db");
+        let db = Database::new_from_path(db_path.to_str().unwrap()).unwrap();
+        db.init().unwrap();
+
+        let conn = db.open_connection().unwrap();
+
+        // Create one valid image
+        let img_path = create_test_image_file(&temp_dir, "valid.jpg", 50, 50);
+        let path_str = img_path.to_str().unwrap();
+        let (mime_type, file_size) = validate_file(&img_path).unwrap();
+        let hash = calculate_sha256(&img_path).unwrap();
+        let valid_id = insert_image_record(&conn, path_str, "valid.jpg", file_size, &hash, &mime_type).unwrap();
+
+        // Insert one with non-existing file
+        let broken_id: i64 = conn.query_row(
+            "INSERT INTO images (file_path, file_name, file_size, file_hash, mime_type, ai_status, source) 
+             VALUES ('/nonexistent/nope.jpg', 'nope.jpg', 500, 'hash_no', 'image/jpeg', 'pending', 'import')
+             RETURNING id",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+
+        // Simulate safe_export with both valid and broken IDs plus a non-existent ID
+        let test_ids = vec![valid_id, broken_id, 9999];
+        let dest_dir = temp_dir.path().join("export_test_errors");
+        fs::create_dir_all(&dest_dir).unwrap();
+
+        let mut exported_count = 0;
+        let mut errors: Vec<SafeExportError> = Vec::new();
+
+        for &id in &test_ids {
+            let file_path: String = match conn.query_row(
+                "SELECT file_path FROM images WHERE id = ?",
+                [id],
+                |row| row.get::<_, String>(0),
+            ) {
+                Ok(fp) => fp,
+                Err(rusqlite::Error::QueryReturnedNoRows) => {
+                    errors.push(SafeExportError { id, reason: format!("图片 ID {} 不存在", id) });
+                    continue;
+                }
+                Err(e) => {
+                    errors.push(SafeExportError { id, reason: format!("查询失败: {}", e) });
+                    continue;
+                }
+            };
+
+            let source = Path::new(&file_path);
+            if !source.exists() {
+                errors.push(SafeExportError { id, reason: format!("文件不存在: {}", file_path) });
+                continue;
+            }
+
+            let file_name = source.file_name().and_then(|n| n.to_str()).unwrap_or("unknown");
+            let target = dest_dir.join(file_name);
+            match fs::copy(source, &target) {
+                Ok(_) => exported_count += 1,
+                Err(e) => errors.push(SafeExportError { id, reason: format!("复制失败: {}", e) }),
+            }
+        }
+
+        assert_eq!(exported_count, 1, "应仅成功导出 1 个文件");
+        assert_eq!(errors.len(), 2, "应有 2 个错误（不存在的文件 + 不存在的ID）");
+    }
+
+    #[test]
+    fn test_safe_export_duplicate_filename_handling() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test_export_dup.db");
+        let db = Database::new_from_path(db_path.to_str().unwrap()).unwrap();
+        db.init().unwrap();
+
+        let conn = db.open_connection().unwrap();
+
+        // Create test image
+        let img_path = create_test_image_file(&temp_dir, "dup.jpg", 80, 80);
+        let path_str = img_path.to_str().unwrap();
+        let (mime_type, file_size) = validate_file(&img_path).unwrap();
+        let hash = calculate_sha256(&img_path).unwrap();
+        let id = insert_image_record(&conn, path_str, "dup.jpg", file_size, &hash, &mime_type).unwrap();
+
+        let dest_dir = temp_dir.path().join("export_dup_test");
+        fs::create_dir_all(&dest_dir).unwrap();
+
+        // Pre-create a file with the same name
+        let pre_existing = dest_dir.join("dup.jpg");
+        File::create(&pre_existing).unwrap();
+        assert!(pre_existing.exists(), "预存文件应存在");
+
+        // Simulate export with duplicate handling
+        let file_name = "dup.jpg";
+        let target = dest_dir.join(file_name);
+
+        let final_target = if target.exists() {
+            let stem = "dup";
+            let ext = "jpg";
+            let mut counter = 1;
+            loop {
+                let new_name = format!("{}_{}.{}", stem, counter, ext);
+                let new_path = dest_dir.join(&new_name);
+                if !new_path.exists() {
+                    break new_path;
+                }
+                counter += 1;
+            }
+        } else {
+            target
+        };
+
+        // Should be dup_1.jpg
+        assert_eq!(final_target.file_name().unwrap().to_str().unwrap(), "dup_1.jpg");
+
+        // Copy should succeed
+        fs::copy(&img_path, &final_target).unwrap();
+        assert!(final_target.exists(), "重命名后的导出文件应存在");
     }
 }

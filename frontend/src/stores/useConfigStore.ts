@@ -8,6 +8,7 @@ export const CONFIG_KEYS = {
   AI_TIMEOUT: 'ai_timeout',
   THUMBNAIL_SIZE: 'thumbnail_size',
   THEME: 'theme',
+  LANGUAGE: 'language',
 } as const
 
 export type ConfigKey = (typeof CONFIG_KEYS)[keyof typeof CONFIG_KEYS]
@@ -19,6 +20,7 @@ interface ConfigState {
   aiTimeout: number
   thumbnailSize: number
   theme: string
+  language: string
 
   // Whether settings have been loaded from backend
   isLoaded: boolean
@@ -50,6 +52,7 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
   aiTimeout: 60,
   thumbnailSize: 300,
   theme: 'system',
+  language: 'zh',
 
   isLoaded: false,
   pendingChanges: {},
@@ -76,6 +79,9 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
           case CONFIG_KEYS.THEME:
             state.theme = value
             break
+          case CONFIG_KEYS.LANGUAGE:
+            state.language = value
+            break
         }
       }
 
@@ -83,9 +89,9 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
       set(newState as Partial<ConfigState>)
       // Return the current state after update
       return get()
-    } catch (err) {
-      console.error('Failed to load configs:', err)
+    } catch {
       // Still mark as loaded so UI renders with defaults
+      // Error is silently handled — defaults will be used
       set({ isLoaded: true })
       return get()
     }
@@ -127,6 +133,9 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
           break
         case CONFIG_KEYS.THEME:
           state.theme = parsed as string
+          break
+        case CONFIG_KEYS.LANGUAGE:
+          state.language = parsed as string
           break
       }
     }

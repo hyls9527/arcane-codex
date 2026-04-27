@@ -31,7 +31,7 @@ export interface ImageQuery {
 export async function getImages(query: ImageQuery) {
   return invoke('get_images', {
     page: query.page,
-    pageSize: query.page_size,
+    page_size: query.page_size,
     filters: query.filters,
   })
 }
@@ -55,8 +55,8 @@ export interface AIStatus {
   eta_seconds?: number
 }
 
-export async function startAIProcessing(concurrency?: number): Promise<void> {
-  return invoke('start_ai_processing', { concurrency })
+export async function startAIProcessing(): Promise<void> {
+  return invoke('start_ai_processing')
 }
 
 export async function pauseAIProcessing(): Promise<void> {
@@ -75,45 +75,147 @@ export async function retryFailedAI(): Promise<number> {
   return invoke<number>('retry_failed_ai')
 }
 
+export async function retrySingleAIResult(imageId: number): Promise<void> {
+  return invoke('retry_failed_ai', { imageId })
+}
+
+export interface AIResult {
+  id: number
+  file_name: string
+  ai_status: string
+  ai_tags?: string
+  ai_description?: string
+  ai_category?: string
+  ai_error_message?: string
+  ai_processed_at?: string
+}
+
+export async function getRecentAIResults(limit: number = 20): Promise<AIResult[]> {
+  return invoke<AIResult[]>('get_recent_ai_results', { limit })
+}
+
 // ===== Semantic Search =====
 
 export interface SearchResult {
   image_id: number
+  file_path: string
+  file_name: string
+  thumbnail_path?: string
+  ai_description?: string
+  ai_tags?: string
+  ai_category?: string
+  ai_confidence?: number
+  match_count: number
+  relevance_score: number
   score: number
+  tags?: string[]
+  description?: string
+  category?: string
 }
 
-export async function semanticSearch(
+export interface SearchFilters {
+  category?: string
+  tags?: string[]
+  start_date?: string
+  end_date?: string
+  page?: number
+  page_size?: number
+}
+
+export interface SearchResponse {
+  results: SearchResult[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export async function searchImages(
   query: string,
-  limit: number = 50
+  filters: SearchFilters = {}
 ): Promise<SearchResult[]> {
-  return invoke<SearchResult[]>('semantic_search', { query, limit })
+  const request = {
+    query,
+    category: filters.category || null,
+    tags: filters.tags || null,
+    start_date: filters.start_date || null,
+    end_date: filters.end_date || null,
+    page: filters.page ?? 0,
+    page_size: filters.page_size ?? 20,
+  }
+
+  const response = await invoke<SearchResponse>('semantic_search', { request })
+
+  return (response.results || []).map(r => ({
+    ...r,
+    score: r.relevance_score || 0,
+    tags: r.ai_tags ? (() => { try { return JSON.parse(r.ai_tags) } catch { return [] } })() : [],
+    description: r.ai_description || '',
+    category: r.ai_category || '',
+  }))
 }
 
 // ===== Deduplication =====
 
-export interface DuplicateImage {
-  id: number
-  thumbnail_path: string
+export interface BackendDuplicateImage {
+  image_id: number
+  file_path: string
   file_name: string
+  file_size: number
   width?: number
   height?: number
-  file_size?: number
+  phash: string
+  distance: number
 }
 
+export interface BackendDuplicateGroup {
+  images: BackendDuplicateImage[]
+  similarity: number
+}
+
+export interface DedupScanResult {
+  groups: BackendDuplicateGroup[]
+  total_scanned: number
+  total_duplicates: number
+  threshold: number
+}
+
+export interface DeleteResult {
+  deleted_count: number
+  kept_count: number
+  freed_space_bytes: number
+  dry_run: boolean
+}
+
+// Legacy UI-facing type for DedupManager component
 export interface DuplicateGroup {
   id: string
-  images: DuplicateImage[]
-  image_ids?: number[]
+  images: BackendDuplicateImage[]
+  image_ids: number[]
   similarity: number
-  keepId?: number
+}
+
+export function mapBackendGroupsToUI(groups: BackendDuplicateGroup[]): DuplicateGroup[] {
+  return groups.map((g, idx) => ({
+    id: String(idx),
+    images: g.images,
+    image_ids: g.images.map(img => img.image_id),
+    similarity: g.similarity,
+  }))
 }
 
 export async function scanDuplicates(threshold: number = 90): Promise<DuplicateGroup[]> {
-  return invoke<DuplicateGroup[]>('scan_duplicates', { threshold })
+  const result = await invoke<DedupScanResult>('scan_duplicates', { request: { similarityPercent: threshold } })
+  return mapBackendGroupsToUI(result.groups)
 }
 
-export async function deleteDuplicates(keepIds: number[]): Promise<number> {
-  return invoke<number>('delete_duplicates', { keepIds })
+export async function deleteDuplicates(groups: BackendDuplicateGroup[], policy: string): Promise<DeleteResult> {
+  return invoke<DeleteResult>('delete_duplicates', {
+    request: {
+      groups,
+      policy,
+      dry_run: false,
+    },
+  })
 }
 
 // ===== Settings =====
@@ -152,4 +254,97 @@ export async function restoreDatabase(backupPath: string): Promise<void> {
 
 export async function testLmStudioConnection(url: string): Promise<boolean> {
   return invoke<boolean>('test_lm_studio_connection', { url })
+}
+
+// ===== Data Export =====
+
+export interface ExportRequest {
+  format: 'json' | 'csv'
+  output_path: string
+  image_ids?: number[]
+}
+
+export interface ExportResult {
+  exported_count: number
+  output_file: string
+  format: string
+}
+
+export async function exportData(request: ExportRequest): Promise<ExportResult> {
+  return invoke<ExportResult>('export_data', { request })
+}
+
+// ===== Broken Link Detection =====
+
+export interface BrokenLinkInfo {
+  id: number
+  file_path: string
+  file_name: string
+}
+
+export interface CheckBrokenLinksResult {
+  broken_count: number
+  broken_images: BrokenLinkInfo[]
+}
+
+export async function checkBrokenLinks(): Promise<CheckBrokenLinksResult> {
+  return invoke<CheckBrokenLinksResult>('check_broken_links')
+}
+
+// ===== Image Archive =====
+
+export interface ArchiveImageResult {
+  archived: boolean
+  dest_path: string
+}
+
+export async function archiveImage(id: number): Promise<ArchiveImageResult> {
+  return invoke<ArchiveImageResult>('archive_image', { id })
+}
+
+// ===== Safe Export =====
+
+export interface SafeExportError {
+  id: number
+  reason: string
+}
+
+export interface SafeExportResult {
+  exported_count: number
+  errors: SafeExportError[]
+}
+
+export async function safeExport(imageIds: number[], destDir: string): Promise<SafeExportResult> {
+  return invoke<SafeExportResult>('safe_export', { imageIds, destDir })
+}
+
+// ===== Narrative Anchor =====
+
+export interface Narrative {
+  id: number
+  image_id: number
+  content: string
+  entities_json: string
+}
+
+export interface AssociationResult {
+  image_id: number
+  file_path: string
+  file_name: string
+  thumbnail_path: string | null
+  narrative_content: string
+  match_type: string
+  relevance: number
+}
+
+export async function writeNarrative(imageId: number, content: string): Promise<Narrative> {
+  return invoke<Narrative>('write_narrative', { imageId, content })
+}
+
+export async function getNarratives(imageId: number): Promise<Narrative[]> {
+  return invoke<Narrative[]>('get_narratives', { imageId })
+}
+
+export async function queryAssociations(query: string, limit?: number): Promise<AssociationResult[]> {
+  return invoke<AssociationResult[]>('query_associations', { query, limit: limit ?? 20 })
 }

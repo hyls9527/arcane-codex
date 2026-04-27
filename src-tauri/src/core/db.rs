@@ -1,15 +1,18 @@
+use r2d2::Pool;
+use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{Connection, Result};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::Manager;
-use tracing::info;
+use tracing::{info, warn};
 
-/// Thread-safe database path holder.
-/// Each command opens its own connection from the path, avoiding `Connection`'s
-/// lack of `Send + Sync`.
+pub type SqlitePool = Pool<SqliteConnectionManager>;
+pub type PooledConn = r2d2::PooledConnection<SqliteConnectionManager>;
+
 #[derive(Clone)]
 pub struct Database {
     pub db_path: Arc<PathBuf>,
+    pool: SqlitePool,
 }
 
 impl Database {
@@ -19,38 +22,35 @@ impl Database {
         PRAGMA busy_timeout=5000;
     ";
 
-    fn configure_connection(conn: &Connection) -> Result<()> {
-        conn.execute_batch(Self::PRAGMA_CONFIG)?;
-        Ok(())
+    fn create_pool(db_path: &PathBuf) -> Result<SqlitePool> {
+        let manager = SqliteConnectionManager::file(db_path)
+            .with_init(|conn| {
+                conn.execute_batch(Self::PRAGMA_CONFIG)?;
+                Ok(())
+            });
+        Pool::new(manager)
+            .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))
     }
 
     pub fn new(app_handle: &tauri::AppHandle) -> Result<Self> {
         let db_path = get_db_path(app_handle);
         info!("Database path: {:?}", db_path);
-
-        let conn = Connection::open(&db_path)?;
-        Self::configure_connection(&conn)?;
-
-        Ok(Database { db_path: Arc::new(db_path) })
+        let pool = Self::create_pool(&db_path)?;
+        Ok(Database { db_path: Arc::new(db_path), pool })
     }
 
-    /// Test-friendly constructor that takes a direct path string.
-    /// Only available in test builds.
     #[cfg(test)]
     pub fn new_from_path(path: &str) -> Result<Self> {
         let db_path = PathBuf::from(path);
-        let conn = Connection::open(&db_path)?;
-        Self::configure_connection(&conn)?;
-        Ok(Database { db_path: Arc::new(db_path) })
+        let pool = Self::create_pool(&db_path)?;
+        Ok(Database { db_path: Arc::new(db_path), pool })
     }
 
-    pub fn open_connection(&self) -> Result<Connection> {
-        let conn = Connection::open(&*self.db_path)?;
-        Self::configure_connection(&conn)?;
-        Ok(conn)
+    pub fn open_connection(&self) -> Result<PooledConn> {
+        self.pool.get()
+            .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))
     }
 
-    /// Convenience method that runs migrations. Alias for run_migrations().
     pub fn init(&self) -> Result<()> {
         self.run_migrations()
     }
@@ -59,20 +59,39 @@ impl Database {
         let conn = self.open_connection()?;
         info!("Running database migrations...");
 
-        // Get current version
         let user_version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
 
         if user_version < 1 {
             info!("Applying migration v1: initial schema");
             drop(conn);
             self.apply_v1_initial_schema()?;
-        } else {
-            info!("Database is up to date (version {})", user_version);
         }
+
+        let conn = self.open_connection()?;
+        let user_version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+
+        if user_version < 2 {
+            info!("Applying migration v2: comfyui generation support");
+            drop(conn);
+            self.apply_v2_comfyui_generation()?;
+        }
+
+        let conn = self.open_connection()?;
+        let user_version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        drop(conn);
+
+        if user_version < 3 {
+            info!("Applying migration v3: narrative anchor");
+            self.apply_v3_narrative_anchor()?;
+        }
+
+        let conn = self.open_connection()?;
+        let final_version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        info!("Database is up to date (version {})", final_version);
 
         Ok(())
     }
-    
+
     fn apply_v1_initial_schema(&self) -> Result<()> {
         let conn = self.open_connection()?;
         conn.execute_batch("
@@ -101,17 +120,17 @@ impl Database {
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
-            
+
             CREATE INDEX IF NOT EXISTS idx_images_ai_status ON images(ai_status);
             CREATE INDEX IF NOT EXISTS idx_images_created_at ON images(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_images_file_hash ON images(file_hash);
-            
+
             CREATE TABLE IF NOT EXISTS tags (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT UNIQUE NOT NULL COLLATE NOCASE,
                 count INTEGER NOT NULL DEFAULT 0
             );
-            
+
             CREATE TABLE IF NOT EXISTS image_tags (
                 image_id INTEGER NOT NULL,
                 tag_id INTEGER NOT NULL,
@@ -119,7 +138,7 @@ impl Database {
                 FOREIGN KEY (image_id) REFERENCES images(id) ON DELETE CASCADE,
                 FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
             );
-            
+
             CREATE TABLE IF NOT EXISTS search_index (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 term TEXT NOT NULL,
@@ -129,10 +148,10 @@ impl Database {
                 weight REAL NOT NULL DEFAULT 1.0,
                 FOREIGN KEY (image_id) REFERENCES images(id) ON DELETE CASCADE
             );
-            
+
             CREATE INDEX IF NOT EXISTS idx_search_index_term ON search_index(term);
             CREATE INDEX IF NOT EXISTS idx_search_index_image_id ON search_index(image_id);
-            
+
             CREATE TABLE IF NOT EXISTS task_queue (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 image_id INTEGER NOT NULL,
@@ -147,44 +166,279 @@ impl Database {
                 completed_at DATETIME,
                 FOREIGN KEY (image_id) REFERENCES images(id) ON DELETE CASCADE
             );
-            
+
             CREATE INDEX IF NOT EXISTS idx_task_queue_status ON task_queue(status);
             CREATE INDEX IF NOT EXISTS idx_task_queue_priority ON task_queue(priority DESC, created_at ASC);
-            
+
             CREATE TABLE IF NOT EXISTS app_config (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
-            
+
             INSERT OR IGNORE INTO app_config (key, value) VALUES
                 ('lm_studio_url', 'http://localhost:1234'),
                 ('ai_concurrency', '3'),
                 ('ai_timeout_seconds', '60'),
                 ('ai_max_retries', '3'),
                 ('theme', 'system'),
-                ('language', 'zh-CN'),
+                ('language', 'zh'),
                 ('thumbnail_size', '300');
-            
+
             PRAGMA user_version = 1;
         ")?;
-        
+
+        Ok(())
+    }
+
+    fn apply_v2_comfyui_generation(&self) -> Result<()> {
+        let conn = self.open_connection()?;
+        conn.execute_batch("
+            ALTER TABLE images ADD COLUMN generation_source TEXT DEFAULT 'manual_import';
+            ALTER TABLE images ADD COLUMN generation_metadata JSON;
+            ALTER TABLE images ADD COLUMN generation_workflow_id TEXT;
+
+            CREATE INDEX IF NOT EXISTS idx_images_generation_source ON images(generation_source);
+
+            PRAGMA user_version = 2;
+        ")?;
+
+        Ok(())
+    }
+
+    fn apply_v3_narrative_anchor(&self) -> Result<()> {
+        let conn = self.open_connection()?;
+        conn.execute_batch("
+            CREATE TABLE IF NOT EXISTS narratives (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                image_id INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                entities_json TEXT,
+                embedding_json TEXT,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (image_id) REFERENCES images(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_narratives_image_id ON narratives(image_id);
+
+            CREATE TABLE IF NOT EXISTS semantic_edges (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_narrative_id INTEGER NOT NULL,
+                target_narrative_id INTEGER NOT NULL,
+                similarity REAL NOT NULL,
+                edge_type TEXT NOT NULL DEFAULT 'semantic',
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (source_narrative_id) REFERENCES narratives(id) ON DELETE CASCADE,
+                FOREIGN KEY (target_narrative_id) REFERENCES narratives(id) ON DELETE CASCADE,
+                UNIQUE(source_narrative_id, target_narrative_id, edge_type)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_semantic_edges_source ON semantic_edges(source_narrative_id);
+            CREATE INDEX IF NOT EXISTS idx_semantic_edges_target ON semantic_edges(target_narrative_id);
+
+            PRAGMA user_version = 3;
+        ")?;
+
         Ok(())
     }
 }
 
 fn get_db_path(app_handle: &tauri::AppHandle) -> PathBuf {
     let app_data = app_handle.path().app_data_dir().unwrap_or_else(|_| {
-        std::env::current_dir().unwrap()
+        std::env::current_dir().unwrap_or_default()
     });
-    
-    std::fs::create_dir_all(&app_data).unwrap();
+
+    let _ = std::fs::create_dir_all(&app_data);
     app_data.join("arcanecodex.db")
 }
 
 pub fn init_database(app_handle: &tauri::AppHandle) -> Result<()> {
-    let db = Database::new(app_handle)?;
-    db.run_migrations()?;
-    info!("Database initialized successfully");
+    let db_path = get_db_path(app_handle);
+    info!("Database path: {:?}", db_path);
+
+    match try_open_database(&db_path) {
+        Ok(_) => {
+            let db = Database::new(app_handle)?;
+            db.run_migrations()?;
+            info!("Database initialized successfully");
+        }
+        Err(e) => {
+            warn!("Database corrupted or invalid: {}", e);
+            warn!("Attempting to recover by renaming corrupted database...");
+
+            let backup_path = db_path.with_extension("db.corrupted");
+            if db_path.exists() {
+                std::fs::rename(&db_path, &backup_path).map_err(|rename_err| {
+                    rusqlite::Error::InvalidParameterName(format!(
+                        "无法重命名损坏的数据库文件: {}", rename_err
+                    ))
+                })?;
+                info!("Corrupted database renamed to: {:?}", backup_path);
+            }
+
+            let wal_path = db_path.with_extension("db-wal");
+            if wal_path.exists() {
+                let _ = std::fs::rename(&wal_path, backup_path.with_extension("db-wal.corrupted"));
+            }
+            let shm_path = db_path.with_extension("db-shm");
+            if shm_path.exists() {
+                let _ = std::fs::rename(&shm_path, backup_path.with_extension("db-shm.corrupted"));
+            }
+
+            let db = Database::new(app_handle)?;
+            db.run_migrations()?;
+            info!("Fresh database initialized after corruption recovery");
+        }
+    }
+
     Ok(())
+}
+
+fn try_open_database(db_path: &PathBuf) -> Result<()> {
+    let conn = Connection::open(db_path)?;
+
+    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA integrity_check;")?;
+
+    match conn.pragma_query_value(None, "user_version", |row| row.get::<_, i32>(0)) {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            warn!("Cannot read user_version: {}", e);
+            Err(e)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+    use std::thread;
+    use std::time::Duration;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    fn setup_test_db() -> (Database, TempDir) {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test_lock.db");
+        let db = Database::new_from_path(db_path.to_str().unwrap()).unwrap();
+        db.run_migrations().unwrap();
+        (db, temp_dir)
+    }
+
+    #[test]
+    fn test_busy_timeout_is_configured() {
+        let (db, _temp) = setup_test_db();
+        let conn = db.open_connection().unwrap();
+
+        let timeout: i64 = conn.pragma_query_value(None, "busy_timeout", |row| row.get(0)).unwrap();
+        assert_eq!(timeout, 5000, "busy_timeout should be 5000ms");
+    }
+
+    #[test]
+    fn test_concurrent_writes_succeed_with_busy_timeout() {
+        let (db, _temp) = setup_test_db();
+
+        let conn = db.open_connection().unwrap();
+        conn.execute("INSERT INTO app_config (key, value) VALUES ('test_key', 'initial')", []).unwrap();
+        drop(conn);
+
+        let success1 = Arc::new(AtomicBool::new(false));
+        let success2 = Arc::new(AtomicBool::new(false));
+
+        let s1 = success1.clone();
+        let s2 = success2.clone();
+        let db_clone1 = db.clone();
+        let db_clone2 = db.clone();
+
+        let handle1 = thread::spawn(move || {
+            let conn = db_clone1.open_connection().unwrap();
+            conn.execute("BEGIN IMMEDIATE", []).unwrap();
+            thread::sleep(Duration::from_millis(100));
+            conn.execute("UPDATE app_config SET value = 'thread1' WHERE key = 'test_key'", []).unwrap();
+            conn.execute("COMMIT", []).unwrap();
+            s1.store(true, Ordering::SeqCst);
+        });
+
+        let handle2 = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(10));
+            let conn = db_clone2.open_connection().unwrap();
+            let result = conn.execute("UPDATE app_config SET value = 'thread2' WHERE key = 'test_key'", []);
+            if result.is_ok() {
+                s2.store(true, Ordering::SeqCst);
+            }
+        });
+
+        handle1.join().unwrap();
+        handle2.join().unwrap();
+
+        assert!(success1.load(Ordering::SeqCst) || success2.load(Ordering::SeqCst),
+            "At least one concurrent write should succeed with busy_timeout");
+
+        let conn = db.open_connection().unwrap();
+        let value: String = conn.query_row("SELECT value FROM app_config WHERE key = 'test_key'", [], |row| row.get(0)).unwrap();
+        assert!(value == "thread1" || value == "thread2", "Final value should be from one of the threads");
+    }
+
+    #[test]
+    fn test_wal_mode_allows_concurrent_reads() {
+        let (db, _temp) = setup_test_db();
+
+        let conn = db.open_connection().unwrap();
+        let journal_mode: String = conn.pragma_query_value(None, "journal_mode", |row| row.get(0)).unwrap();
+        assert_eq!(journal_mode, "wal", "journal_mode should be WAL");
+
+        conn.execute("INSERT INTO app_config (key, value) VALUES ('wal_test', 'data')", []).unwrap();
+        drop(conn);
+
+        let db1 = db.clone();
+        let db2 = db.clone();
+
+        let handle1 = thread::spawn(move || {
+            let conn = db1.open_connection().unwrap();
+            let value: String = conn.query_row("SELECT value FROM app_config WHERE key = 'wal_test'", [], |row| row.get(0)).unwrap();
+            assert_eq!(value, "data");
+        });
+
+        let handle2 = thread::spawn(move || {
+            let conn = db2.open_connection().unwrap();
+            let value: String = conn.query_row("SELECT value FROM app_config WHERE key = 'wal_test'", [], |row| row.get(0)).unwrap();
+            assert_eq!(value, "data");
+        });
+
+        handle1.join().unwrap();
+        handle2.join().unwrap();
+    }
+
+    #[test]
+    fn test_corrupted_database_recovery() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test_corrupt.db");
+
+        std::fs::write(&db_path, &[0u8; 1024]).unwrap();
+
+        let result = try_open_database(&db_path);
+        assert!(result.is_err(), "Corrupted database should fail to open");
+
+        let _ = std::fs::remove_file(&db_path);
+        let db = Database::new_from_path(db_path.to_str().unwrap()).unwrap();
+        db.run_migrations().unwrap();
+
+        let conn = db.open_connection().unwrap();
+        let timeout: i64 = conn.pragma_query_value(None, "busy_timeout", |row| row.get(0)).unwrap();
+        assert_eq!(timeout, 5000);
+    }
+
+    #[test]
+    fn test_missing_database_creates_fresh() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("nonexistent.db");
+
+        let db = Database::new_from_path(db_path.to_str().unwrap()).unwrap();
+        db.run_migrations().unwrap();
+
+        assert!(db_path.exists(), "Database file should be created");
+        let conn = db.open_connection().unwrap();
+        let timeout: i64 = conn.pragma_query_value(None, "busy_timeout", |row| row.get(0)).unwrap();
+        assert_eq!(timeout, 5000);
+    }
 }

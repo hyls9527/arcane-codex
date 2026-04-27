@@ -1,105 +1,68 @@
 import { useEffect, useState, useCallback } from 'react'
+import { useTranslation } from 'react-i18next'
+import { ErrorBoundary } from './components/common/ErrorBoundary'
 import { TopBar } from './components/layout/TopBar'
 import { Sidebar } from './components/layout/Sidebar'
 import { MainLayout } from './components/layout/MainLayout'
 import { useThemeStore } from './stores/useThemeStore'
-import { ImageGrid } from './components/gallery/ImageGrid'
+import { useConfigStore } from './stores/useConfigStore'
+import type { Theme } from './stores/useThemeStore'
+import { useImageStore } from './stores/useImageStore'
 import { ImageViewer } from './components/gallery/ImageViewer'
-import { DropZone } from './components/gallery/DropZone'
+import { ImportProgressBar } from './components/gallery/ImportProgressBar'
 import { SettingsPage } from './components/settings/SettingsPage'
-import { AIProgressPanel } from './components/ai/AIProgressPanel'
-import { DedupManager } from './components/dedup/DedupManager'
+import { LMStudioGuide } from './components/ai/LMStudioGuide'
+import i18n from './i18n'
+import { GalleryPage } from './pages/GalleryPage'
+import { AIPage } from './pages/AIPage'
+import { DedupPage } from './pages/DedupPage'
 import {
-  getImages,
-  importImages,
-  getAIStatus,
-  startAIProcessing,
-  pauseAIProcessing,
-  resumeAIProcessing,
+  deleteImages,
+  exportData,
   retryFailedAI,
-  scanDuplicates,
-  deleteDuplicates,
-  type AIStatus,
-  type DuplicateGroup,
+  startAIProcessing,
+  archiveImage,
+  safeExport,
 } from './lib/api'
-
-type Page = 'gallery' | 'settings' | 'ai' | 'dedup'
-
-interface AppImage {
-  id: number
-  thumbnail_path: string
-  file_name: string
-  ai_tags?: string[]
-  ai_status?: 'pending' | 'processing' | 'completed' | 'failed'
-  file_path?: string
-  width?: number
-  height?: number
-  file_size?: number
-}
+import { type AppImage, type Page, type Toast } from './types/image'
 
 function App() {
   const [currentPage, setCurrentPage] = useState<Page>('gallery')
-  const { theme } = useThemeStore()
-  const [images, setImages] = useState<AppImage[]>([])
-  const [loading, setLoading] = useState(true)
-
-  // ImageViewer state
+  const { theme } = useConfigStore()
+  const { applyTheme } = useThemeStore()
+  const { loadConfigs } = useConfigStore()
+  const { images, loading, error, searchQuery, loadImages, setSearchQuery } = useImageStore()
+  const [toasts, setToasts] = useState<Toast[]>([])
   const [viewingImage, setViewingImage] = useState<AppImage | null>(null)
+  const { t } = useTranslation()
 
-  // AI Processing state
-  const [aiStatus, setAiStatus] = useState<AIStatus>({
-    status: 'idle',
-    total: 0,
-    completed: 0,
-    failed: 0,
-    retrying: 0,
-  })
-  const [aiLoading, setAiLoading] = useState(false)
+  const addToast = useCallback((message: string, type: 'error' | 'success' | 'info' = 'info') => {
+    const id = Date.now()
+    setToasts(prev => [...prev, { id, message, type }])
+    setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id))
+    }, 4000)
+  }, [])
 
-  // Dedup state
-  const [dedupGroups, setDedupGroups] = useState<DuplicateGroup[]>([])
-  const [dedupLoading, setDedupLoading] = useState(false)
-
-  const loadImages = useCallback(async () => {
-    try {
-      setLoading(true)
-      const result = await getImages({ page: 1, page_size: 100 })
-      if (result && Array.isArray(result)) {
-        setImages(result)
+  useEffect(() => {
+    loadConfigs().then((configs) => {
+      if (configs?.language) {
+        i18n.changeLanguage(configs.language)
       }
-    } catch (err) {
-      console.error('Failed to load images:', err)
-    } finally {
-      setLoading(false)
-    }
-  }, [])
+    })
+  }, [loadConfigs])
 
-  const loadAIStatus = useCallback(async () => {
-    try {
-      const status = await getAIStatus()
-      setAiStatus(status)
-    } catch (err) {
-      console.error('Failed to load AI status:', err)
-    }
-  }, [])
-
-  const handleFilesSelected = useCallback(async (files: File[]) => {
-    if (files.length === 0) return
-    try {
-      const paths = files.map(f => (f as any).path || f.name)
-      await importImages(paths)
-      await loadImages()
-    } catch (err) {
-      console.error('Failed to import images:', err)
-    }
+  useEffect(() => {
+    loadImages()
   }, [loadImages])
 
-  const handleImageClick = useCallback((id: number) => {
-    const image = images.find(img => img.id === id)
-    if (image) {
-      setViewingImage(image)
-    }
-  }, [images])
+  useEffect(() => {
+    applyTheme(theme as Theme)
+  }, [theme, applyTheme])
+
+  const handleImageClick = useCallback((image: AppImage) => {
+    setViewingImage(image)
+  }, [])
 
   const handleViewerClose = useCallback(() => {
     setViewingImage(null)
@@ -107,139 +70,101 @@ function App() {
 
   const handleViewerDelete = useCallback(async (id: number) => {
     try {
-      const { deleteImages } = await import('./lib/api')
       await deleteImages([id])
       setViewingImage(null)
       await loadImages()
-    } catch (err) {
-      console.error('Failed to delete image:', err)
+    } catch {
+      addToast(t('errors.deleteFailed'), 'error')
     }
-  }, [loadImages])
+  }, [loadImages, addToast, t])
 
-  useEffect(() => {
-    loadImages()
-    loadAIStatus()
-  }, [loadImages, loadAIStatus])
+  const handleViewerExport = useCallback(async (id: number) => {
+    try {
+      const result = await exportData({
+        format: 'json',
+        output_path: `C:\\Users\\Public\\Documents\\ArcaneCodex_Export_${id}.json`,
+        image_ids: [id],
+      })
+      addToast(t('gallery.exportSuccess', { count: result.exported_count }), 'success')
+    } catch {
+      addToast(t('errors.exportFailed'), 'error')
+    }
+  }, [addToast, t])
 
-  useEffect(() => {
-    if (theme === 'system') {
-      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
-      document.documentElement.classList.toggle('dark', prefersDark)
+  const handleViewerReAnalyze = useCallback(async (id: number) => {
+    try {
+      await retryFailedAI()
+      await startAIProcessing()
+      addToast(t('imageViewer.reAnalyzeStarted'), 'success')
+    } catch {
+      addToast(t('errors.reAnalyzeFailed'), 'error')
+    }
+  }, [addToast, t])
 
-      const listener = (e: MediaQueryListEvent) => {
-        document.documentElement.classList.toggle('dark', e.matches)
+  const handleViewerArchive = useCallback(async (id: number) => {
+    try {
+      const result = await archiveImage(id)
+      if (result.archived) {
+        addToast(t('imageViewer.archiveSuccess', { path: result.dest_path }), 'success')
       }
-      window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', listener)
-      return () => window.matchMedia('(prefers-color-scheme: dark)').removeEventListener('change', listener)
-    } else {
-      document.documentElement.classList.toggle('dark', theme === 'dark')
+    } catch (err) {
+      addToast(`${t('errors.archiveFailed')}: ${err instanceof Error ? err.message : t('common.unknownError')}`, 'error')
     }
-  }, [theme])
+  }, [addToast, t])
+
+  const handleViewerSafeExport = useCallback(async (id: number) => {
+    try {
+      const destDir = `C:\\Users\\Public\\Documents\\ArcaneCodex_Export`
+      const result = await safeExport([id], destDir)
+      if (result.exported_count > 0) {
+        addToast(t('imageViewer.safeExportSuccess', { count: result.exported_count, dir: destDir }), 'success')
+      } else {
+        addToast(t('imageViewer.safeExportNoFiles'), 'info')
+      }
+    } catch (err) {
+      addToast(`${t('errors.safeExportFailed')}: ${err instanceof Error ? err.message : t('common.unknownError')}`, 'error')
+    }
+  }, [addToast, t])
+
+  const handleViewerTagClick = useCallback((tag: string) => {
+    setViewingImage(null)
+    setSearchQuery(tag)
+    setCurrentPage('gallery')
+  }, [setSearchQuery])
+
+  const handleSearch = useCallback((query: string) => {
+    setSearchQuery(query)
+    setCurrentPage('gallery')
+  }, [setSearchQuery])
 
   return (
-    <div className="h-screen w-screen overflow-hidden bg-background text-foreground">
-      <MainLayout>
-        <Sidebar onNavigate={setCurrentPage} currentPage={currentPage} />
-        <div className="flex flex-col flex-1">
-          <TopBar />
-          <main className="flex-1 overflow-auto p-4">
-            {currentPage === 'gallery' && (
-              loading ? (
-                <div className="flex items-center justify-center h-full text-gray-500">加载中...</div>
-              ) : (
-                <>
-                  <div className="mb-4">
-                    <DropZone onFilesSelected={handleFilesSelected} />
-                  </div>
-                  <div className="h-[calc(100%-200px)]">
-                    <ImageGrid
-                      images={images}
-                      onImageClick={handleImageClick}
-                    />
-                  </div>
-                </>
-              )
-            )}
-            {currentPage === 'settings' && <SettingsPage />}
-            {currentPage === 'ai' && (
-              <div className="max-w-2xl mx-auto">
-                <AIProgressPanel
-                  status={aiStatus}
-                  isLoading={aiLoading}
-                  onStart={async () => {
-                    setAiLoading(true)
-                    try {
-                      await startAIProcessing()
-                      await loadAIStatus()
-                    } catch (err) {
-                      console.error('Failed to start AI processing:', err)
-                    } finally {
-                      setAiLoading(false)
-                    }
-                  }}
-                  onPause={async () => {
-                    try {
-                      await pauseAIProcessing()
-                      await loadAIStatus()
-                    } catch (err) {
-                      console.error('Failed to pause AI processing:', err)
-                    }
-                  }}
-                  onResume={async () => {
-                    try {
-                      await resumeAIProcessing()
-                      await loadAIStatus()
-                    } catch (err) {
-                      console.error('Failed to resume AI processing:', err)
-                    }
-                  }}
-                  onRetry={async () => {
-                    try {
-                      await retryFailedAI()
-                      await loadAIStatus()
-                    } catch (err) {
-                      console.error('Failed to retry AI:', err)
-                    }
-                  }}
+    <ErrorBoundary>
+      <div className="h-screen w-screen overflow-hidden bg-background text-foreground">
+        <MainLayout>
+          <Sidebar onNavigate={setCurrentPage} currentPage={currentPage} />
+          <div className="flex flex-col flex-1">
+            <TopBar onSearch={handleSearch} searchQuery={searchQuery} />
+            <main className="flex-1 overflow-auto p-4">
+              {currentPage === 'gallery' && (
+                <GalleryPage
+                  images={images}
+                  loading={loading}
+                  error={error}
+                  onLoadImages={loadImages}
+                  addToast={addToast}
+                  onImageClick={handleImageClick}
                 />
-              </div>
-            )}
-            {currentPage === 'dedup' && (
-              <DedupManager
-                groups={dedupGroups}
-                isLoading={dedupLoading}
-                onScan={async (threshold) => {
-                  setDedupLoading(true)
-                  try {
-                    const groups = await scanDuplicates(threshold)
-                    setDedupGroups(groups)
-                  } catch (err) {
-                    console.error('Failed to scan duplicates:', err)
-                  } finally {
-                    setDedupLoading(false)
-                  }
-                }}
-                onDelete={async (groupIds) => {
-                  try {
-                    const groupsToDelete = dedupGroups.filter(g => groupIds.includes(g.id))
-                    const idsToDelete = groupsToDelete.flatMap(g => g.image_ids || g.images?.map(img => img.id) || [])
-                    if (idsToDelete.length > 0) {
-                      await deleteDuplicates(idsToDelete)
-                      await loadImages()
-                      // Remove deleted groups
-                      setDedupGroups(prev => prev.filter(g => !groupIds.includes(g.id)))
-                    }
-                  } catch (err) {
-                    console.error('Failed to delete duplicates:', err)
-                  }
-                }}
-              />
-            )}
-          </main>
-        </div>
-      </MainLayout>
+              )}
+              {currentPage === 'settings' && <SettingsPage />}
+              {currentPage === 'ai' && <AIPage addToast={addToast} />}
+              {currentPage === 'dedup' && (
+                <DedupPage addToast={addToast} onImagesChanged={loadImages} />
+              )}
+            </main>
+          </div>
+        </MainLayout>
+      </div>
 
-      {/* Image Viewer Modal */}
       {viewingImage && (
         <ImageViewer
           image={{
@@ -248,13 +173,40 @@ function App() {
             file_name: viewingImage.file_name,
             width: viewingImage.width,
             height: viewingImage.height,
+            file_size: viewingImage.file_size,
             ai_tags: viewingImage.ai_tags,
+            ai_description: viewingImage.ai_description,
+            ai_category: viewingImage.ai_category,
+            exif_data: viewingImage.exif_data,
           }}
           onClose={handleViewerClose}
           onDelete={handleViewerDelete}
+          onExport={handleViewerExport}
+          onReAnalyze={handleViewerReAnalyze}
+          onArchive={handleViewerArchive}
+          onSafeExport={handleViewerSafeExport}
+          onTagClick={handleViewerTagClick}
         />
       )}
-    </div>
+
+      <ImportProgressBar onComplete={() => loadImages()} />
+      <LMStudioGuide />
+
+      <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
+        {toasts.map(toast => (
+          <div
+            key={toast.id}
+            className={`px-4 py-3 rounded-lg shadow-lg text-white text-sm max-w-xs animate-slide-in ${
+              toast.type === 'error' ? 'bg-red-500' :
+              toast.type === 'success' ? 'bg-green-500' :
+              'bg-blue-500'
+            }`}
+          >
+            {toast.message}
+          </div>
+        ))}
+      </div>
+    </ErrorBoundary>
   )
 }
 

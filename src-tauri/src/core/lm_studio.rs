@@ -43,7 +43,7 @@ pub struct LMStudioModelInfo {
 
 pub struct LMStudioClient {
     client: Client,
-    config: LMStudioConfig,
+    pub config: LMStudioConfig,
 }
 
 impl LMStudioClient {
@@ -52,7 +52,7 @@ impl LMStudioClient {
             .timeout(Duration::from_secs(config.timeout_secs))
             .build()
             .map_err(|e| {
-                AppError::Validation(format!("创建 HTTP 客户端失败: {}", e))
+                AppError::validation(format!("创建 HTTP 客户端失败: {}", e))
             })?;
 
         info!("LM Studio 客户端初始化完成: {}", config.base_url);
@@ -89,17 +89,17 @@ impl LMStudioClient {
             .send()
             .await
             .map_err(|e| {
-                AppError::Validation(format!("健康检查请求失败: {}", e))
+                AppError::validation(format!("健康检查请求失败: {}", e))
             })?;
 
         if !resp.status().is_success() {
-            return Err(AppError::Validation(format!(
+            return Err(AppError::validation(format!(
                 "健康检查失败: HTTP {}", resp.status()
             )));
         }
 
         let body: serde_json::Value = resp.json().await.map_err(|e| {
-            AppError::Validation(format!("解析健康检查响应失败: {}", e))
+            AppError::validation(format!("解析健康检查响应失败: {}", e))
         })?;
 
         let models: Vec<LMStudioModelInfo> = body.get("data")
@@ -158,19 +158,19 @@ impl LMStudioClient {
             .send()
             .await
             .map_err(|e| {
-                AppError::Validation(format!("AI 推理请求失败: {}", e))
+                AppError::validation(format!("AI 推理请求失败: {}", e))
             })?;
 
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return Err(AppError::Validation(format!(
+            return Err(AppError::validation(format!(
                 "AI 推理失败: HTTP {} - {}", status, body
             )));
         }
 
         let body: serde_json::Value = resp.json().await.map_err(|e| {
-            AppError::Validation(format!("解析 AI 响应失败: {}", e))
+            AppError::validation(format!("解析 AI 响应失败: {}", e))
         })?;
 
         let content = body
@@ -181,7 +181,7 @@ impl LMStudioClient {
             .and_then(|msg| msg.get("content"))
             .and_then(|c| c.as_str())
             .ok_or_else(|| {
-                AppError::Validation("AI 响应格式不正确".to_string())
+                AppError::validation("AI 响应格式不正确".to_string())
             })?;
 
         let result = self.parse_ai_response(content)?;
@@ -195,7 +195,7 @@ impl LMStudioClient {
         use std::fs;
 
         let bytes = fs::read(image_path).map_err(|e| {
-            AppError::Validation(format!("读取图片文件失败: {}", e))
+            AppError::validation(format!("读取图片文件失败: {}", e))
         })?;
 
         Ok(data_encoding::BASE64.encode(&bytes))
@@ -222,19 +222,26 @@ impl LMStudioClient {
     }
 
     fn build_prompt(&self) -> String {
-        r#"You are an AI image analyst. Analyze the given image and return a JSON object with the following fields:
-- "tags": array of 5-10 descriptive keywords (English)
-- "description": a concise 1-2 sentence description (English)
-- "category": one of [landscape, portrait, animal, food, architecture, object, abstract, document, screenshot, other]
-- "confidence": a number between 0.0 and 1.0 indicating your confidence
+        r#"请分析这张图片,并以以下 JSON 格式返回:
+{
+  "tags": ["标签1", "标签2", "标签3"],
+  "description": "一句话描述图片内容",
+  "category": "风景|人物|物品|动物|建筑|文档|其他",
+  "confidence": 0.95
+}
+要求:
+- tags: 5-10个关键词,中文优先,避免重复和过于宽泛的词
+- description: 简洁准确,1-2句话,不超过50字
+- category: 从上述分类中选择一个
+- confidence: 0.0-1.0之间的数字,表示你的置信度
 
-Return ONLY valid JSON. No markdown, no explanations."#
+仅返回合法 JSON,不要包含 Markdown 代码块标记或其他解释。"#
             .to_string()
     }
 
     fn parse_ai_response(&self, content: &str) -> AppResult<AIResult> {
         let parsed: serde_json::Value = serde_json::from_str(content).map_err(|e| {
-            AppError::Validation(format!("解析 AI JSON 响应失败: {} - 原始内容: {}", e, content))
+            AppError::validation(format!("解析 AI JSON 响应失败: {} - 原始内容: {}", e, content))
         })?;
 
         let tags = parsed
@@ -348,19 +355,38 @@ mod tests {
     }
 
     #[test]
+    fn test_build_prompt_prd_compliant() {
+        let client = LMStudioClient::new(LMStudioConfig::default()).unwrap();
+        let prompt = client.build_prompt();
+        
+        assert!(prompt.contains("请分析这张图片"));
+        assert!(prompt.contains("风景"));
+        assert!(prompt.contains("人物"));
+        assert!(prompt.contains("物品"));
+        assert!(prompt.contains("动物"));
+        assert!(prompt.contains("建筑"));
+        assert!(prompt.contains("文档"));
+        assert!(prompt.contains("其他"));
+        assert!(prompt.contains("中文优先"));
+        assert!(prompt.contains("5-10个关键词"));
+        assert!(prompt.contains("1-2句话"));
+        assert!(prompt.contains("不超过50字"));
+    }
+
+    #[test]
     fn test_parse_ai_response_valid_json() {
         let client = LMStudioClient::new(LMStudioConfig::default()).unwrap();
         let json = r#"{
-            "tags": ["cat", "animal", "cute", "pet", "feline"],
-            "description": "A cute orange cat sitting on a windowsill",
-            "category": "animal",
+            "tags": ["猫", "动物", "可爱", "宠物", "猫咪"],
+            "description": "一只可爱的橘猫坐在窗台上晒太阳",
+            "category": "动物",
             "confidence": 0.95
         }"#;
 
         let result = client.parse_ai_response(json).unwrap();
         assert_eq!(result.tags.len(), 5);
-        assert!(result.tags.contains(&"cat".to_string()));
-        assert_eq!(result.category, "animal");
+        assert!(result.tags.contains(&"猫".to_string()));
+        assert_eq!(result.category, "动物");
         assert_eq!(result.confidence, 0.95);
         assert!(!result.description.is_empty());
     }

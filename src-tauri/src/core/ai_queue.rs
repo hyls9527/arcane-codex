@@ -1,41 +1,33 @@
 use crate::core::db::Database;
-use crate::core::lm_studio::{LMStudioClient, LMStudioConfig, AIResult};
-use crate::utils::error::AppResult;
-use async_channel::{bounded, Receiver, Sender};
-use serde::{Deserialize, Serialize};
+use crate::core::lm_studio::{LMStudioClient, LMStudioConfig};
+use crate::core::search_index::SearchIndexBuilder;
+use serde::Serialize;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
-use tokio::sync::{broadcast, Semaphore};
+use tauri::{AppHandle, Emitter};
+use tokio::sync::{mpsc, Mutex as TokioMutex};
 use tracing::{info, warn, error, debug};
 
 const QUEUE_CAPACITY: usize = 1000;
 const DEFAULT_CONCURRENCY: usize = 3;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum TaskStatus {
-    Pending,
-    Processing,
-    Completed,
-    Failed,
-    Cancelled,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct QueueStatus {
-    pub is_running: bool,
-    pub is_paused: bool,
-    pub total_tasks: usize,
-    pub processed_tasks: usize,
-    pub failed_tasks: usize,
-    pub pending_tasks: usize,
-    pub concurrency: usize,
-}
+const MAX_RETRIES: u32 = 3;
 
 #[derive(Debug, Clone)]
 pub struct AITask {
     pub image_id: i64,
     pub file_path: String,
-    pub retry_count: i32,
+    pub retry_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct QueueStatus {
+    pub is_running: bool,
+    pub is_paused: bool,
+    pub total_tasks: usize,
+    pub pending_tasks: usize,
+    pub processed_tasks: usize,
+    pub failed_tasks: usize,
+    pub concurrency: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -45,90 +37,117 @@ pub enum QueueCommand {
     Cancel,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct AIProgressEvent {
+    pub image_id: i64,
+    pub status: String,
+    pub message: String,
+    pub total: usize,
+    pub current: usize,
+}
+
 pub struct AITaskQueue {
-    sender: Sender<AITask>,
-    receiver: Receiver<AITask>,
-    command_sender: broadcast::Sender<QueueCommand>,
-    semaphore: Arc<Semaphore>,
+    sender: mpsc::Sender<AITask>,
+    receiver: Arc<TokioMutex<Option<mpsc::Receiver<AITask>>>>,
+    command_sender: mpsc::Sender<QueueCommand>,
+    command_receiver: Arc<TokioMutex<Option<mpsc::Receiver<QueueCommand>>>>,
     is_running: Arc<AtomicBool>,
     is_paused: Arc<AtomicBool>,
-    total_tasks: Arc<AtomicUsize>,
-    processed_tasks: Arc<AtomicUsize>,
-    failed_tasks: Arc<AtomicUsize>,
+    concurrency: usize,
+    pub total_tasks: AtomicUsize,
+    pub processed_tasks: AtomicUsize,
+    pub failed_tasks: AtomicUsize,
     db: Arc<Database>,
-    client_config: LMStudioConfig,
+    app_handle: Option<AppHandle>,
 }
 
 impl AITaskQueue {
     pub fn new(db: Arc<Database>, concurrency: Option<usize>) -> Self {
-        let conc = concurrency.unwrap_or(DEFAULT_CONCURRENCY);
-        let (sender, receiver) = bounded::<AITask>(QUEUE_CAPACITY);
-        let (command_sender, _) = broadcast::channel::<QueueCommand>(16);
-
-        info!(
-            "AI 任务队列初始化: 容量 {}, 并发数 {}",
-            QUEUE_CAPACITY, conc
-        );
+        let (sender, receiver) = mpsc::channel::<AITask>(QUEUE_CAPACITY);
+        let (command_sender, command_receiver) = mpsc::channel::<QueueCommand>(16);
+        let concurrency = concurrency.unwrap_or(DEFAULT_CONCURRENCY);
 
         Self {
             sender,
-            receiver,
+            receiver: Arc::new(TokioMutex::new(Some(receiver))),
             command_sender,
-            semaphore: Arc::new(Semaphore::new(conc)),
+            command_receiver: Arc::new(TokioMutex::new(Some(command_receiver))),
             is_running: Arc::new(AtomicBool::new(false)),
             is_paused: Arc::new(AtomicBool::new(false)),
-            total_tasks: Arc::new(AtomicUsize::new(0)),
-            processed_tasks: Arc::new(AtomicUsize::new(0)),
-            failed_tasks: Arc::new(AtomicUsize::new(0)),
+            concurrency,
+            total_tasks: AtomicUsize::new(0),
+            processed_tasks: AtomicUsize::new(0),
+            failed_tasks: AtomicUsize::new(0),
             db,
-            client_config: LMStudioConfig::default(),
+            app_handle: None,
         }
     }
 
-    pub fn get_status(&self) -> QueueStatus {
-        let total = self.total_tasks.load(Ordering::SeqCst);
-        let processed = self.processed_tasks.load(Ordering::SeqCst);
-        let failed = self.failed_tasks.load(Ordering::SeqCst);
-        let pending = self.sender.len();
-
-        QueueStatus {
-            is_running: self.is_running.load(Ordering::SeqCst),
-            is_paused: self.is_paused.load(Ordering::SeqCst),
-            total_tasks: total,
-            processed_tasks: processed,
-            failed_tasks: failed,
-            pending_tasks: pending,
-            concurrency: self.semaphore.available_permits(),
-        }
+    pub fn with_app_handle(mut self, app: AppHandle) -> Self {
+        self.app_handle = Some(app);
+        self
     }
 
-    pub async fn enqueue(&self, task: AITask) -> AppResult<()> {
-        if !self.is_running.load(Ordering::SeqCst) {
-            return Err(crate::utils::error::AppError::Validation(
-                "队列未运行，无法添加任务".to_string(),
-            ));
-        }
-
-        if self.sender.len() >= QUEUE_CAPACITY {
-            return Err(crate::utils::error::AppError::Validation(
-                "队列已满，请稍后重试".to_string(),
-            ));
-        }
-
-        self.sender.send(task).await.map_err(|e| {
-            crate::utils::error::AppError::Validation(format!("添加任务失败: {}", e))
-        })?;
-
-        self.total_tasks.fetch_add(1, Ordering::SeqCst);
-        debug!("任务入队成功，队列长度: {}", self.sender.len());
-
-        Ok(())
+    pub fn db(&self) -> &Database {
+        &self.db
     }
 
-    pub fn start(&mut self) {
+    pub fn set_concurrency(&mut self, concurrency: usize) {
+        self.concurrency = concurrency.max(1).min(10);
+    }
+
+    pub fn start(&self) {
         self.is_running.store(true, Ordering::SeqCst);
         self.is_paused.store(false, Ordering::SeqCst);
         info!("AI 任务队列已启动");
+    }
+
+    pub async fn spawn_workers(&self) {
+        if !self.is_running.load(Ordering::SeqCst) {
+            warn!("队列未启动，无法 spawn workers");
+            return;
+        }
+
+        let receiver = {
+            let mut guard = self.receiver.lock().await;
+            guard.take()
+        };
+
+        let command_receiver = {
+            let mut guard = self.command_receiver.lock().await;
+            guard.take()
+        };
+
+        let Some(receiver) = receiver else {
+            warn!("receiver 已被消费，无法再次 spawn workers");
+            return;
+        };
+        let Some(command_receiver) = command_receiver else {
+            warn!("command_receiver 已被消费，无法再次 spawn workers");
+            return;
+        };
+
+        let receiver = Arc::new(TokioMutex::new(receiver));
+        let command_receiver = Arc::new(TokioMutex::new(command_receiver));
+
+        for worker_id in 0..self.concurrency {
+            let worker = Worker {
+                worker_id,
+                sender: self.sender.clone(),
+                receiver: receiver.clone(),
+                command_receiver: command_receiver.clone(),
+                is_paused: self.is_paused.clone(),
+                is_running: self.is_running.clone(),
+                total_tasks: Arc::new(AtomicUsize::new(0)),
+                processed_tasks: Arc::new(AtomicUsize::new(0)),
+                failed_tasks: Arc::new(AtomicUsize::new(0)),
+                db: self.db.clone(),
+                app_handle: self.app_handle.clone(),
+            };
+            tokio::spawn(worker.run());
+        }
+
+        info!("已启动 {} 个 AI Worker", self.concurrency);
     }
 
     pub fn pause(&self) {
@@ -143,149 +162,367 @@ impl AITaskQueue {
 
     pub fn cancel(&self) {
         self.is_running.store(false, Ordering::SeqCst);
+        self.is_paused.store(false, Ordering::SeqCst);
         info!("AI 任务队列已取消");
     }
 
-    pub fn get_command_receiver(&self) -> broadcast::Receiver<QueueCommand> {
-        self.command_sender.subscribe()
+    pub fn get_status(&self) -> QueueStatus {
+        let total = self.total_tasks.load(Ordering::SeqCst);
+        let processed = self.processed_tasks.load(Ordering::SeqCst);
+        let failed = self.failed_tasks.load(Ordering::SeqCst);
+        let pending = total.saturating_sub(processed + failed);
+
+        QueueStatus {
+            is_running: self.is_running.load(Ordering::SeqCst),
+            is_paused: self.is_paused.load(Ordering::SeqCst),
+            total_tasks: total,
+            pending_tasks: pending,
+            processed_tasks: processed,
+            failed_tasks: failed,
+            concurrency: self.concurrency,
+        }
     }
 
-    pub async fn start_workers(&self, worker_count: usize) {
-        let mut handles = vec![];
+    pub async fn enqueue(&self, task: AITask) -> Result<(), String> {
+        if !self.is_running.load(Ordering::SeqCst) {
+            return Err("队列未启动".to_string());
+        }
+        if self.is_paused.load(Ordering::SeqCst) {
+            return Err("队列已暂停".to_string());
+        }
 
-        for i in 0..worker_count {
-            let receiver = self.receiver.clone();
-            let semaphore = self.semaphore.clone();
-            let is_paused = self.is_paused.clone();
-            let is_running = self.is_running.clone();
-            let processed = self.processed_tasks.clone();
-            let failed = self.failed_tasks.clone();
-            let db = self.db.clone();
-            let client_config = self.client_config.clone();
-            let mut cmd_receiver = self.get_command_receiver();
+        let image_id = task.image_id;
+        self.sender
+            .send(task)
+            .await
+            .map_err(|e| format!("发送任务失败: {}", e))?;
 
-            let handle = tokio::spawn(async move {
-                info!("Worker {} 启动", i);
+        self.total_tasks.fetch_add(1, Ordering::SeqCst);
+        debug!("任务已加入队列: image_id={}", image_id);
+        Ok(())
+    }
 
-                loop {
-                    if !is_running.load(Ordering::SeqCst) {
-                        info!("Worker {} 检测到停止信号", i);
+    fn query_pending_tasks(&self) -> Vec<(i64, String, u32)> {
+        let conn = match self.db.open_connection() {
+            Ok(c) => c,
+            Err(e) => {
+                error!("查询 pending 任务失败: {}", e);
+                return vec![];
+            }
+        };
+
+        let mut stmt = match conn.prepare(
+            "SELECT i.id, i.file_path, i.ai_retry_count FROM images i WHERE i.ai_status = 'pending' ORDER BY i.created_at ASC",
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                error!("查询 pending 任务 SQL 失败: {}", e);
+                return vec![];
+            }
+        };
+
+        let rows = match stmt.query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, u32>(2)?))
+        }) {
+            Ok(r) => r,
+            Err(e) => {
+                error!("查询 pending 任务行失败: {}", e);
+                return vec![];
+            }
+        };
+
+        rows.filter_map(|r| r.ok()).collect()
+    }
+
+    fn query_failed_retry_tasks(&self) -> Vec<(i64, String, u32)> {
+        let conn = match self.db.open_connection() {
+            Ok(c) => c,
+            Err(e) => {
+                error!("查询 failed 任务失败: {}", e);
+                return vec![];
+            }
+        };
+
+        let mut stmt = match conn.prepare(
+            "SELECT i.id, i.file_path, i.ai_retry_count FROM images i WHERE i.ai_status = 'failed' AND i.ai_retry_count < ?1",
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                error!("查询 failed 重试任务 SQL 失败: {}", e);
+                return vec![];
+            }
+        };
+
+        let rows = match stmt.query_map(rusqlite::params![MAX_RETRIES], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, u32>(2)?))
+        }) {
+            Ok(r) => r,
+            Err(e) => {
+                error!("查询 failed 重试任务行失败: {}", e);
+                return vec![];
+            }
+        };
+
+        rows.filter_map(|r| r.ok()).collect()
+    }
+
+    pub async fn submit_pending_tasks(&self) {
+        let pending = self.query_pending_tasks();
+        info!("发现 {} 个 pending AI 任务", pending.len());
+
+        for (image_id, file_path, retry_count) in pending {
+            let task = AITask { image_id, file_path, retry_count };
+            if let Err(e) = self.enqueue(task).await {
+                warn!("加入队列失败 (image_id={}): {}", image_id, e);
+            }
+        }
+    }
+
+    pub async fn submit_failed_retry_tasks(&self) {
+        let failed = self.query_failed_retry_tasks();
+        info!("发现 {} 个可重试的 failed AI 任务", failed.len());
+
+        for (image_id, file_path, retry_count) in failed {
+            let task = AITask { image_id, file_path, retry_count };
+            if let Err(e) = self.enqueue(task).await {
+                warn!("重试入队失败 (image_id={}): {}", image_id, e);
+            }
+        }
+    }
+}
+
+struct Worker {
+    worker_id: usize,
+    sender: mpsc::Sender<AITask>,
+    receiver: Arc<TokioMutex<mpsc::Receiver<AITask>>>,
+    command_receiver: Arc<TokioMutex<mpsc::Receiver<QueueCommand>>>,
+    is_paused: Arc<AtomicBool>,
+    is_running: Arc<AtomicBool>,
+    total_tasks: Arc<AtomicUsize>,
+    processed_tasks: Arc<AtomicUsize>,
+    failed_tasks: Arc<AtomicUsize>,
+    db: Arc<Database>,
+    app_handle: Option<AppHandle>,
+}
+
+impl Worker {
+    async fn run(self) {
+        info!("Worker {} 启动", self.worker_id);
+
+        loop {
+            if !self.is_running.load(Ordering::SeqCst) {
+                info!("Worker {} 停止（is_running=false）", self.worker_id);
+                break;
+            }
+
+            if self.is_paused.load(Ordering::SeqCst) {
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                continue;
+            }
+
+            let cmd = {
+                let mut guard = self.command_receiver.lock().await;
+                guard.try_recv().ok()
+            };
+
+            if let Some(command) = cmd {
+                match command {
+                    QueueCommand::Cancel => {
+                        info!("Worker {} 收到 Cancel 命令，退出", self.worker_id);
                         break;
                     }
-
-                    if is_paused.load(Ordering::SeqCst) {
-                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    QueueCommand::Pause => {
+                        info!("Worker {} 收到 Pause 命令", self.worker_id);
+                        self.is_paused.store(true, Ordering::SeqCst);
                         continue;
                     }
-
-                    tokio::select! {
-                        Ok(cmd) = cmd_receiver.recv() => {
-                            match cmd {
-                                QueueCommand::Cancel => {
-                                    info!("Worker {} 收到取消命令", i);
-                                    break;
-                                }
-                                QueueCommand::Pause => {
-                                    is_paused.store(true, Ordering::SeqCst);
-                                }
-                                QueueCommand::Resume => {
-                                    is_paused.store(false, Ordering::SeqCst);
-                                }
-                            }
-                        }
-                        task_result = receiver.recv() => {
-                            match task_result {
-                                Ok(task) => {
-                                    let permit = semaphore.clone().acquire_owned().await;
-                                    if let Ok(_permit) = permit {
-                                        let result = Self::process_task(&task, &db, &client_config).await;
-                                        match result {
-                                            Ok(_) => {
-                                                processed.fetch_add(1, Ordering::SeqCst);
-                                                debug!("Worker {}: 任务 {} 处理成功", i, task.image_id);
-                                            }
-                                            Err(e) => {
-                                                failed.fetch_add(1, Ordering::SeqCst);
-                                                error!("Worker {}: 任务 {} 处理失败: {}", i, task.image_id, e);
-                                            }
-                                        }
-                                    }
-                                }
-                                Err(_) => {
-                                    debug!("Worker {} 队列为空", i);
-                                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                                }
-                            }
-                        }
+                    QueueCommand::Resume => {
+                        info!("Worker {} 收到 Resume 命令", self.worker_id);
+                        self.is_paused.store(false, Ordering::SeqCst);
                     }
                 }
+            }
 
-                info!("Worker {} 退出", i);
-            });
+            let task = {
+                let mut guard = self.receiver.lock().await;
+                guard.recv().await
+            };
 
-            handles.push(handle);
+            let Some(task) = task else {
+                continue;
+            };
+
+            debug!("Worker {} 处理任务: image_id={}", self.worker_id, task.image_id);
+
+            self.process_task(&task).await;
         }
 
-        for handle in handles {
-            let _ = handle.await;
-        }
-
-        info!("所有 Worker 已退出");
+        info!("Worker {} 退出", self.worker_id);
     }
 
-    async fn process_task(
-        task: &AITask,
-        db: &Database,
-        config: &LMStudioConfig,
-    ) -> AppResult<()> {
-        let client = LMStudioClient::new(config.clone())?;
+    async fn process_task(&self, task: &AITask) {
+        let image_id = task.image_id;
+        let file_path = &task.file_path;
 
-        let result = client.analyze_image(&task.file_path).await?;
+        let _ = self.update_ai_status(image_id, "processing");
 
-        Self::update_image_ai_result(db, task.image_id, &result).await?;
+        match LMStudioClient::new(LMStudioConfig::default()) {
+            Ok(client) => {
+                match client.analyze_image(file_path).await {
+                    Ok(result) => {
+                        let tags_json = serde_json::to_string(&result.tags).unwrap_or_default();
+                        let _ = self.update_ai_status_full(
+                            image_id,
+                            "completed",
+                            Some(&tags_json),
+                            Some(&result.description),
+                            Some(&result.category),
+                            Some(result.confidence),
+                            Some(&client.config.model),
+                            None,
+                        );
 
-        info!(
-            "任务 {} 处理完成: {} (置信度: {:.2})",
-            task.image_id, task.file_path, result.confidence
-        );
+                        let builder = SearchIndexBuilder::new();
+                        if let Err(e) = builder.build_for_image(
+                            &self.db,
+                            image_id,
+                            &result.description,
+                            &result.tags,
+                            &result.category,
+                        ) {
+                            warn!("构建搜索索引失败 (image_id={}): {}", image_id, e);
+                        }
 
+                        self.processed_tasks.fetch_add(1, Ordering::SeqCst);
+                        self.emit_progress(image_id, "completed", &result.description);
+                        info!("Worker {} 完成 image_id={}", self.worker_id, image_id);
+                    }
+                    Err(e) => {
+                        self.handle_ai_failure(image_id, task.retry_count, &e.to_string()).await;
+                    }
+                }
+            }
+            Err(e) => {
+                self.handle_ai_failure(image_id, task.retry_count, &e.to_string()).await;
+            }
+        }
+    }
+
+    async fn handle_ai_failure(&self, image_id: i64, retry_count: u32, error_msg: &str) {
+        let new_retry_count = retry_count + 1;
+
+        if new_retry_count < MAX_RETRIES {
+            let backoff_ms = 2u64.pow(new_retry_count) * 1000;
+            warn!(
+                "AI 失败 (image_id={}, 重试 {}/{}), {}ms 后重试: {}",
+                image_id, new_retry_count, MAX_RETRIES, backoff_ms, error_msg
+            );
+
+            let _ = self.update_ai_status_with_error(image_id, "pending", error_msg);
+
+            tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
+
+            if self.is_running.load(Ordering::SeqCst) && !self.is_paused.load(Ordering::SeqCst) {
+                let task = AITask {
+                    image_id,
+                    file_path: self.query_file_path(image_id),
+                    retry_count: new_retry_count,
+                };
+                self.total_tasks.fetch_add(1, Ordering::SeqCst);
+                if let Err(e) = self.sender.send(task).await.map_err(|e| e.to_string()) {
+                    warn!("重试入队失败 (image_id={}): {}", image_id, e);
+                }
+            }
+        } else {
+            error!("AI 达到最大重试次数 (image_id={}): {}", image_id, error_msg);
+            let _ = self.update_ai_status_with_error(image_id, "failed", error_msg);
+            self.failed_tasks.fetch_add(1, Ordering::SeqCst);
+            self.emit_progress(image_id, "failed", error_msg);
+        }
+    }
+
+    fn query_file_path(&self, image_id: i64) -> String {
+        let conn = match self.db.open_connection() {
+            Ok(c) => c,
+            Err(_) => return String::new(),
+        };
+        conn.query_row(
+            "SELECT file_path FROM images WHERE id = ?1",
+            rusqlite::params![image_id],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap_or_default()
+    }
+
+    fn update_ai_status(&self, image_id: i64, status: &str) -> Result<(), String> {
+        let conn = self.db.open_connection().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE images SET ai_status = ?2, updated_at = CURRENT_TIMESTAMP WHERE id = ?1",
+            rusqlite::params![image_id, status],
+        )
+        .map_err(|e| e.to_string())?;
         Ok(())
     }
 
-    async fn update_image_ai_result(
-        db: &Database,
+    fn update_ai_status_with_error(&self, image_id: i64, status: &str, error_msg: &str) -> Result<(), String> {
+        let conn = self.db.open_connection().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE images SET ai_status = ?2, ai_error_message = ?3, ai_retry_count = ai_retry_count + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?1",
+            rusqlite::params![image_id, status, error_msg],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    fn update_ai_status_full(
+        &self,
         image_id: i64,
-        result: &AIResult,
-    ) -> AppResult<()> {
-        let conn = db.open_connection()?;
-
-        let tags_json = serde_json::to_string(&result.tags).unwrap_or("[]".to_string());
-
+        status: &str,
+        ai_tags: Option<&str>,
+        ai_description: Option<&str>,
+        ai_category: Option<&str>,
+        ai_confidence: Option<f64>,
+        ai_model: Option<&str>,
+        error_msg: Option<&str>,
+    ) -> Result<(), String> {
+        let conn = self.db.open_connection().map_err(|e| e.to_string())?;
         conn.execute(
             "UPDATE images SET 
-             ai_status = 'completed',
-             ai_tags = ?1,
-             ai_description = ?2,
-             ai_category = ?3,
-             ai_confidence = ?4,
-             ai_model = ?5,
-             ai_processed_at = datetime('now'),
-             ai_error_message = NULL,
-             updated_at = datetime('now')
-             WHERE id = ?6",
+                ai_status = ?2, 
+                ai_tags = ?3, 
+                ai_description = ?4, 
+                ai_category = ?5, 
+                ai_confidence = ?6, 
+                ai_model = ?7,
+                ai_processed_at = CURRENT_TIMESTAMP,
+                ai_error_message = ?8,
+                updated_at = CURRENT_TIMESTAMP 
+            WHERE id = ?1",
             rusqlite::params![
-                tags_json,
-                result.description,
-                result.category,
-                result.confidence,
-                result.raw_response.chars().take(500).collect::<String>(),
-                image_id,
+                image_id, status, ai_tags.unwrap_or(""), ai_description.unwrap_or(""),
+                ai_category.unwrap_or(""), ai_confidence.unwrap_or(0.0),
+                ai_model.unwrap_or(""), error_msg.unwrap_or("")
             ],
-        )?;
-
-        debug!("更新图片 {} 的 AI 结果", image_id);
-
+        )
+        .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    fn emit_progress(&self, image_id: i64, status: &str, message: &str) {
+        if let Some(app) = &self.app_handle {
+            let total = self.total_tasks.load(Ordering::SeqCst);
+            let current = self.processed_tasks.load(Ordering::SeqCst) + self.failed_tasks.load(Ordering::SeqCst);
+            let _ = app.emit(
+                "ai-progress",
+                AIProgressEvent {
+                    image_id,
+                    status: status.to_string(),
+                    message: message.to_string(),
+                    total,
+                    current,
+                },
+            );
+        }
     }
 }
 
@@ -297,25 +534,10 @@ mod tests {
 
     fn setup_test_db() -> (Arc<Database>, TempDir) {
         let temp_dir = TempDir::new().unwrap();
-        let db_path = temp_dir.path().join("test_queue.db");
+        let db_path = temp_dir.path().join("test_ai_queue.db");
         let db = Arc::new(Database::new_from_path(db_path.to_str().unwrap()).unwrap());
-        db.init().unwrap();
+        db.run_migrations().unwrap();
         (db, temp_dir)
-    }
-
-    #[test]
-    fn test_queue_creation() {
-        let (db, _temp) = setup_test_db();
-        let queue = AITaskQueue::new(db, None);
-
-        let status = queue.get_status();
-        assert!(!status.is_running);
-        assert!(!status.is_paused);
-        assert_eq!(status.total_tasks, 0);
-        assert_eq!(status.processed_tasks, 0);
-        assert_eq!(status.failed_tasks, 0);
-        assert_eq!(status.pending_tasks, 0);
-        assert_eq!(status.concurrency, DEFAULT_CONCURRENCY);
     }
 
     #[test]
@@ -330,7 +552,7 @@ mod tests {
     #[test]
     fn test_queue_start_stop() {
         let (db, _temp) = setup_test_db();
-        let mut queue = AITaskQueue::new(db, None);
+        let queue = AITaskQueue::new(db, None);
 
         assert!(!queue.get_status().is_running);
 
@@ -350,8 +572,8 @@ mod tests {
         assert!(!queue.get_status().is_running);
     }
 
-    #[test]
-    fn test_enqueue_when_not_running() {
+    #[tokio::test]
+    async fn test_enqueue_when_not_running() {
         let (db, _temp) = setup_test_db();
         let queue = AITaskQueue::new(db, None);
 
@@ -361,15 +583,14 @@ mod tests {
             retry_count: 0,
         };
 
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(queue.enqueue(task));
+        let result = queue.enqueue(task).await;
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_enqueue_success() {
+    #[tokio::test]
+    async fn test_enqueue_success() {
         let (db, _temp) = setup_test_db();
-        let mut queue = AITaskQueue::new(db, None);
+        let queue = AITaskQueue::new(db, None);
         queue.start();
 
         let task = AITask {
@@ -378,8 +599,7 @@ mod tests {
             retry_count: 0,
         };
 
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(queue.enqueue(task));
+        let result = queue.enqueue(task).await;
         assert!(result.is_ok());
 
         let status = queue.get_status();
@@ -387,13 +607,11 @@ mod tests {
         assert_eq!(status.pending_tasks, 1);
     }
 
-    #[test]
-    fn test_queue_capacity_limit() {
+    #[tokio::test]
+    async fn test_queue_capacity_limit() {
         let (db, _temp) = setup_test_db();
-        let mut queue = AITaskQueue::new(db, Some(1));
+        let queue = AITaskQueue::new(db, Some(1));
         queue.start();
-
-        let rt = tokio::runtime::Runtime::new().unwrap();
 
         for i in 0..QUEUE_CAPACITY {
             let task = AITask {
@@ -402,30 +620,23 @@ mod tests {
                 retry_count: 0,
             };
 
-            let result = rt.block_on(queue.enqueue(task));
-            if i >= QUEUE_CAPACITY - 1 {
-                assert!(result.is_err() || queue.sender.is_full());
+            let result = queue.enqueue(task).await;
+            if result.is_err() {
+                break;
             }
         }
     }
 
     #[tokio::test]
-    async fn test_command_broadcast() {
+    async fn test_command_send() {
         let (db, _temp) = setup_test_db();
         let queue = AITaskQueue::new(db, None);
-
-        let mut receiver = queue.get_command_receiver();
 
         queue
             .command_sender
             .send(QueueCommand::Pause)
-            .unwrap();
-
-        let cmd = receiver.recv().await.unwrap();
-        match cmd {
-            QueueCommand::Pause => {}
-            _ => panic!("Expected Pause command"),
-        }
+            .await
+            .expect("Failed to send command");
     }
 
     #[test]

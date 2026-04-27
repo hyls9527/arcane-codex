@@ -16,25 +16,25 @@ impl ImageProcessor {
         let out_path = Path::new(output_path);
 
         if !img_path.exists() {
-            return Err(AppError::Validation(format!(
+            return Err(AppError::validation(format!(
                 "源图片不存在: {}", image_path
             )));
         }
 
         let img = image::open(img_path).map_err(|e| {
-            AppError::Validation(format!("无法打开图片 {}: {}", image_path, e))
+            AppError::validation(format!("无法打开图片 {}: {}", image_path, e))
         })?;
 
         let thumbnail = img.thumbnail(MAX_THUMBNAIL_WIDTH, MAX_THUMBNAIL_HEIGHT);
 
         if let Some(parent) = out_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
-                AppError::File(std::io::Error::new(std::io::ErrorKind::Other, e))
+                AppError::io(std::io::Error::new(std::io::ErrorKind::Other, e))
             })?;
         }
 
         thumbnail.save_with_format(out_path, image::ImageFormat::WebP).map_err(|e| {
-            AppError::Validation(format!("保存缩略图失败 {}: {}", output_path, e))
+            AppError::validation(format!("保存缩略图失败 {}: {}", output_path, e))
         })?;
 
         info!("缩略图生成成功: {} -> {}", image_path, output_path);
@@ -46,13 +46,13 @@ impl ImageProcessor {
         let img_path = Path::new(image_path);
 
         if !img_path.exists() {
-            return Err(AppError::Validation(format!(
+            return Err(AppError::validation(format!(
                 "源图片不存在: {}", image_path
             )));
         }
 
         let img = image::open(img_path).map_err(|e| {
-            AppError::Validation(format!("无法打开图片 {}: {}", image_path, e))
+            AppError::validation(format!("无法打开图片 {}: {}", image_path, e))
         })?;
 
         let rgba = img.to_rgba8();
@@ -73,15 +73,15 @@ impl ImageProcessor {
 
     pub fn hamming_distance(hash1: &str, hash2: &str) -> AppResult<u32> {
         let bytes1 = hex::decode(hash1).map_err(|e| {
-            AppError::Validation(format!("解析 hash1 失败: {:?}", e))
+            AppError::validation(format!("解析 hash1 失败: {:?}", e))
         })?;
 
         let bytes2 = hex::decode(hash2).map_err(|e| {
-            AppError::Validation(format!("解析 hash2 失败: {:?}", e))
+            AppError::validation(format!("解析 hash2 失败: {:?}", e))
         })?;
 
         if bytes1.len() != bytes2.len() {
-            return Err(AppError::Validation(format!(
+            return Err(AppError::validation(format!(
                 "哈希长度不匹配: {} vs {}", bytes1.len(), bytes2.len()
             )));
         }
@@ -98,13 +98,13 @@ impl ImageProcessor {
         let img_path = Path::new(image_path);
 
         if !img_path.exists() {
-            return Err(AppError::Validation(format!(
+            return Err(AppError::validation(format!(
                 "源图片不存在: {}", image_path
             )));
         }
 
         let img = image::open(img_path).map_err(|e| {
-            AppError::Validation(format!("无法打开图片 {}: {}", image_path, e))
+            AppError::validation(format!("无法打开图片 {}: {}", image_path, e))
         })?;
 
         let dimensions = img.dimensions();
@@ -116,7 +116,7 @@ impl ImageProcessor {
         });
 
         let file = File::open(img_path).map_err(|e| {
-            AppError::Validation(format!("无法打开文件: {}", e))
+            AppError::validation(format!("无法打开文件: {}", e))
         })?;
 
         let mut bufreader = BufReader::new(&file);

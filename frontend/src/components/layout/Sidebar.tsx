@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { 
   Image as ImageIcon, 
   Settings, 
@@ -16,15 +17,16 @@ interface SidebarProps {
   currentPage: Page
 }
 
-const navItems = [
-  { id: 'gallery' as const, label: '图库', icon: ImageIcon },
-  { id: 'ai' as const, label: 'AI 打标', icon: Sparkles },
-  { id: 'dedup' as const, label: '去重', icon: Copy },
-  { id: 'settings' as const, label: '设置', icon: Settings },
-]
-
 export function Sidebar({ onNavigate, currentPage }: SidebarProps) {
+  const { t } = useTranslation()
   const [collapsed, setCollapsed] = useState(false)
+  
+  const navItems = [
+    { id: 'gallery' as const, label: t('navigation.gallery'), icon: ImageIcon },
+    { id: 'ai' as const, label: t('navigation.aiTagging'), icon: Sparkles },
+    { id: 'dedup' as const, label: t('navigation.dedup'), icon: Copy },
+    { id: 'settings' as const, label: t('navigation.settings'), icon: Settings },
+  ]
   
   return (
     <aside className={cn(
@@ -39,8 +41,8 @@ export function Sidebar({ onNavigate, currentPage }: SidebarProps) {
         )}
         <button
           onClick={() => setCollapsed(!collapsed)}
-          className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700"
-          aria-label={collapsed ? '展开侧边栏' : '折叠侧边栏'}
+          className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 dark:focus:ring-offset-dark-100"
+          aria-label={collapsed ? t('navigation.expandSidebar') : t('navigation.collapseSidebar')}
         >
           {collapsed ? (
             <ChevronRight className="w-5 h-5" />
@@ -58,6 +60,7 @@ export function Sidebar({ onNavigate, currentPage }: SidebarProps) {
             className={cn(
               'flex items-center w-full gap-3 px-3 py-2 rounded-lg transition-colors',
               'hover:bg-gray-100 dark:hover:bg-gray-700',
+              'focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 dark:focus:ring-offset-dark-100',
               currentPage === id && 'bg-primary-50 dark:bg-primary-900/20 text-primary-600 dark:text-primary-400',
               collapsed && 'justify-center'
             )}

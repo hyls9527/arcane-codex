@@ -30,5 +30,6 @@
     /* JSON module resolution */
     "resolveJsonModule": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  "exclude": ["src/test", "src/**/*.test.tsx", "src/**/*.test.ts"]
 }

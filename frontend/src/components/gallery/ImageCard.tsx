@@ -1,11 +1,14 @@
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { cn } from '@/utils/cn'
 import { motion } from 'framer-motion'
+import { FileImage } from 'lucide-react'
 
 interface ImageCardProps {
   id: number
   src: string
   fileName: string
+  aiDescription?: string
   tags?: string[]
   aiStatus?: 'pending' | 'processing' | 'completed' | 'failed'
   isSelected?: boolean
@@ -17,14 +20,17 @@ export function ImageCard({
   id,
   src,
   fileName,
+  aiDescription,
   tags = [],
   aiStatus = 'pending',
   isSelected = false,
   onClick,
   onToggleSelect,
 }: ImageCardProps) {
+  const { t } = useTranslation()
   const [isHovered, setIsHovered] = useState(false)
   const [imageLoaded, setImageLoaded] = useState(false)
+  const [imageError, setImageError] = useState(false)
   
   const statusColors = {
     pending: 'bg-gray-400',
@@ -44,32 +50,54 @@ export function ImageCard({
         'cursor-pointer',
         'ring-2 ring-transparent',
         isSelected && 'ring-primary-500',
-        'hover:shadow-lg transition-shadow'
+        'hover:shadow-lg transition-shadow',
+        'focus-within:ring-2 focus-within:ring-primary-500'
       )}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       onClick={() => onClick?.(id)}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick?.(id); } }}
+      tabIndex={0}
+      role="button"
+      aria-label={t('imageCard.viewImage', { fileName })}
     >
-      {/* Thumbnail */}
-      {!imageLoaded && (
+      {/* Loading Spinner */}
+      {!imageLoaded && !imageError && (
         <div className="absolute inset-0 flex items-center justify-center">
           <div className="w-8 h-8 border-2 border-gray-300 border-t-primary-500 rounded-full animate-spin" />
         </div>
       )}
       
+      {/* Broken Link Display */}
+      {imageError && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-200 dark:bg-dark-200">
+          <FileImage className="w-10 h-10 text-gray-400 mb-2" />
+          <p className="text-xs text-gray-500 dark:text-gray-400 text-center px-2">
+            {t('gallery.fileDeleted')}
+          </p>
+        </div>
+      )}
+      
       <img
         src={src}
-        alt={fileName}
+        alt={aiDescription || fileName}
         loading="lazy"
-        onLoad={() => setImageLoaded(true)}
+        onLoad={() => {
+          setImageLoaded(true)
+          setImageError(false)
+        }}
+        onError={() => {
+          setImageError(true)
+          setImageLoaded(false)
+        }}
         className={cn(
           'w-full h-full object-cover transition-opacity duration-300',
-          !imageLoaded && 'opacity-0'
+          (!imageLoaded || imageError) && 'opacity-0'
         )}
       />
       
       {/* Hover Overlay */}
-      {isHovered && (
+      {isHovered && !imageError && (
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
@@ -107,9 +135,10 @@ export function ImageCard({
               'transition-colors',
               isSelected
                 ? 'bg-primary-500 border-primary-500'
-                : 'border-white/50 hover:border-white'
+                : 'border-white/50 hover:border-white',
+              'focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-1 focus:ring-offset-black/60'
             )}
-            aria-label={isSelected ? '取消选择' : '选择图片'}
+            aria-label={isSelected ? t('imageCard.deselect') : t('imageCard.select')}
           >
             {isSelected && (
               <svg className="w-full h-full text-white" viewBox="0 0 20 20" fill="currentColor">

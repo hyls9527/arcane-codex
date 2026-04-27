@@ -1,7 +1,14 @@
 use crate::core::db::Database;
 use crate::utils::error::{AppError, AppResult};
 use jieba_rs::Jieba;
+use std::sync::OnceLock;
 use tracing::{info, debug};
+
+static GLOBAL_JIEBA: OnceLock<Jieba> = OnceLock::new();
+
+fn global_jieba() -> &'static Jieba {
+    GLOBAL_JIEBA.get_or_init(Jieba::new)
+}
 
 const STOP_WORDS: &[&str] = &[
     "的", "了", "在", "是", "我", "有", "和", "就", "不", "人", "都", "一", "一个",
@@ -13,19 +20,15 @@ const STOP_WORDS: &[&str] = &[
     "it", "its", "this", "these", "those", "what", "which", "who", "whom",
 ];
 
-pub struct SearchIndexBuilder {
-    jieba: Jieba,
-}
+pub struct SearchIndexBuilder;
 
 impl SearchIndexBuilder {
     pub fn new() -> Self {
-        Self {
-            jieba: Jieba::new(),
-        }
+        Self
     }
 
     pub fn tokenize(&self, text: &str) -> Vec<String> {
-        let words = self.jieba.cut(text, false);
+        let words = global_jieba().cut(text, false);
 
         words
             .iter()
@@ -53,7 +56,7 @@ impl SearchIndexBuilder {
             "DELETE FROM search_index WHERE image_id = ?",
             rusqlite::params![image_id],
         )
-        .map_err(AppError::Database)?;
+        .map_err(AppError::database)?;
 
         let mut tokens = Vec::new();
         tokens.extend(self.tokenize(ai_description));
@@ -64,14 +67,14 @@ impl SearchIndexBuilder {
         tokens.sort();
         tokens.dedup();
 
-        let tx = conn.transaction().map_err(AppError::Database)?;
+        let tx = conn.transaction().map_err(AppError::database)?;
 
         {
             let mut stmt = tx
                 .prepare(
                     "INSERT INTO search_index (image_id, term, field, weight) VALUES (?1, ?2, ?3, ?4)",
                 )
-                .map_err(AppError::Database)?;
+                .map_err(AppError::database)?;
 
             for token in &tokens {
                 let weight = if ai_tags.iter().any(|t| t.to_lowercase() == *token) {
@@ -82,11 +85,11 @@ impl SearchIndexBuilder {
 
                 let field = "combined";
                 stmt.execute(rusqlite::params![image_id, token, field, weight])
-                    .map_err(AppError::Database)?;
+                    .map_err(AppError::database)?;
             }
         }
 
-        tx.commit().map_err(AppError::Database)?;
+        tx.commit().map_err(AppError::database)?;
 
         debug!(
             "为图片 {} 构建搜索索引: {} 个词条",
@@ -105,7 +108,7 @@ impl SearchIndexBuilder {
                 "DELETE FROM search_index WHERE image_id = ?",
                 rusqlite::params![image_id],
             )
-            .map_err(AppError::Database)?;
+            .map_err(AppError::database)?;
 
         debug!("删除图片 {} 的搜索索引: {} 条记录", image_id, deleted);
 
@@ -180,7 +183,7 @@ impl SearchIndexBuilder {
         params.push(Box::new(limit as i64));
         params.push(Box::new(offset as i64));
 
-        let mut stmt = conn.prepare(&sql).map_err(AppError::Database)?;
+        let mut stmt = conn.prepare(&sql).map_err(AppError::database)?;
 
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
             params.iter().map(|p| p.as_ref()).collect();
@@ -200,7 +203,7 @@ impl SearchIndexBuilder {
                     relevance_score: row.get(9)?,
                 })
             })
-            .map_err(AppError::Database)?;
+            .map_err(AppError::database)?;
 
         let results: Vec<SearchResult> = rows
             .filter_map(|r| match r {

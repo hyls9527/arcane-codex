@@ -6,3 +6,4 @@ pub mod ai_queue;
 pub mod lm_studio;
 pub mod search_index;
 pub mod dedup;
+pub mod bk_tree;

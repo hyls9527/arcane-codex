@@ -74,3 +74,40 @@ debug.log
 
 # Temporary reports
 *工作报告.md
+
+# Encrypted keys
+.env.keys.json.enc
+
+# Obsidian workspace
+.obsidian/
+
+# Trae instances
+.trae-instances/
+
+# Templates (local)
+Templates/
+
+# API vault standalone project (has own repo)
+api-vault-gui.py
+api-vault.ps1
+启动API保险箱.bat
+思考与深渊.md
+记忆.md
+
+# Sandbox test artifacts
+sandbox-results/
+frontend/sandbox-test-design-skills.mjs
+frontend/sandbox-test.mjs
+frontend/sandbox-test-output/
+frontend/test_output.txt
+src-tauri/test_err.txt
+
+# Ralph engine pycache
+ralph-engine/__pycache__/
+ralph-engine/legacy/
+
+# Trae CN CLI (separate)
+trae-cn-cli/
+
+# Scripts (local utilities)
+scripts/

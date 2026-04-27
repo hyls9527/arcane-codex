@@ -4,12 +4,13 @@ use std::fs;
 use std::path::Path;
 use tracing::{info, warn};
 use crate::core::db::Database;
-use crate::core::dedup::{DeduplicationScanner, DuplicateGroup, ScanResult as CoreScanResult};
+use crate::core::dedup::{DeduplicationScanner, DuplicateGroup, ScanResult as CoreScanResult, similarity_to_hamming};
 use crate::utils::error::{AppError, AppResult};
 
 #[derive(Debug, Deserialize)]
 pub struct ScanRequest {
     pub threshold: Option<u32>,
+    pub similarity_percent: Option<f64>,
 }
 
 #[tauri::command]
@@ -17,7 +18,13 @@ pub async fn scan_duplicates(
     db: State<'_, Database>,
     request: Option<ScanRequest>,
 ) -> AppResult<CoreScanResult> {
-    let threshold = request.and_then(|r| r.threshold);
+    let threshold = request.and_then(|r| {
+        if let Some(pct) = r.similarity_percent {
+            Some(similarity_to_hamming(pct))
+        } else {
+            r.threshold
+        }
+    });
     let scanner = DeduplicationScanner::new(threshold);
 
     info!("开始重复项扫描，阈值: {:?}", threshold);
@@ -28,6 +35,7 @@ pub async fn scan_duplicates(
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RetentionPolicy {
     KeepHighestResolution,
     KeepEarliestImport,
@@ -55,7 +63,7 @@ pub async fn delete_duplicates(
     request: DeleteDuplicatesRequest,
 ) -> AppResult<DeleteResult> {
     if request.groups.is_empty() {
-        return Err(AppError::Validation("没有需要处理的重复项".to_string()));
+        return Err(AppError::validation("没有需要处理的重复项".to_string()));
     }
 
     let dry_run = request.dry_run.unwrap_or(false);
@@ -146,13 +154,13 @@ fn delete_image_record(db: &Database, image_id: i64) -> AppResult<Option<String>
         "DELETE FROM search_index WHERE image_id = ?",
         rusqlite::params![image_id],
     )
-    .map_err(AppError::Database)?;
+    .map_err(AppError::database)?;
 
     conn.execute(
         "DELETE FROM images WHERE id = ?",
         rusqlite::params![image_id],
     )
-    .map_err(AppError::Database)?;
+    .map_err(AppError::database)?;
 
     Ok(thumbnail_path)
 }
@@ -366,5 +374,145 @@ mod tests {
         };
 
         assert!(group.images.len() < 2);
+    }
+
+    // Helper to create test images with specific pHash values
+    fn create_test_image_with_phash(
+        db: &Database,
+        id: i64,
+        name: &str,
+        width: i32,
+        height: i32,
+        file_size: i64,
+        phash: &str,
+    ) {
+        let conn = db.open_connection().unwrap();
+        conn.execute(
+            "INSERT INTO images (file_path, file_name, file_size, file_hash, ai_status, width, height, phash) 
+             VALUES (?, ?, ?, ?, 'completed', ?, ?, ?)",
+            rusqlite::params![
+                format!("/test/{}", name),
+                name,
+                file_size,
+                format!("hash_{}", id),
+                width,
+                height,
+                phash,
+            ],
+        )
+        .unwrap();
+    }
+
+    /// Integration Test: TC-E2E-HP-003
+    /// 验证完整去重流程: 扫描 → 并排对比 → 选择保留 → 批量删除
+    #[test]
+    fn test_e2e_deduplication_flow_scan_delete_verify() {
+        let (db, _temp) = setup_test_db();
+
+        // === PHASE 1: 创建测试数据 (模拟相似 pHash 图片) ===
+        // 组 A: 两张相似图片 (汉明距离 4, 阈值 10 内)
+        create_test_image_with_phash(&db, 1, "a1_1080p.jpg", 1920, 1080, 2_000_000, "0000000000000000");
+        create_test_image_with_phash(&db, 2, "a2_720p.jpg",  1280, 720,  1_000_000, "000000000000000f"); // dist=4
+
+        // 组 B: 两张相似图片 (汉明距离 4, 阈值 10 内)
+        create_test_image_with_phash(&db, 3, "b1_4k.jpg",   3840, 2160, 5_000_000, "1111111111111111");
+        create_test_image_with_phash(&db, 4, "b2_1080p.jpg",1920, 1080, 2_000_000, "111111111111111f"); // dist=4
+
+        // 控制组: 唯一图片
+        create_test_image_with_phash(&db, 5, "unique.jpg",   800,  600,   500_000, "aaaaaaaaaaaaaaaa");
+
+        // === PHASE 2: 调用 scan_duplicates 扫描 ===
+        let scanner = DeduplicationScanner::new(Some(10)); // threshold=10 覆盖距离 4
+        let scan_result = scanner.scan(&db).expect("扫描应成功");
+
+        // 验证扫描结果
+        assert_eq!(scan_result.total_scanned, 5, "应扫描全部 5 张图片");
+        assert_eq!(scan_result.groups.len(), 2, "应发现 2 组重复项");
+        assert_eq!(scan_result.total_duplicates, 4, "共 4 张重复图片");
+        
+        // 验证每组包含 2 张图片
+        let group_sizes: Vec<usize> = scan_result.groups.iter().map(|g| g.images.len()).collect();
+        assert!(group_sizes.contains(&2), "每组应包含 2 张图片");
+
+        // 验证相似度计算正确 (1.0 - 4/64 ≈ 0.9375)
+        for group in &scan_result.groups {
+            assert!(group.similarity > 0.9, "组内相似度应高于 90%");
+        }
+
+        // === PHASE 3: 前端并排对比 + 选择保留策略 ===
+        // 模拟用户在 DedupManager 组件中查看 side-by-side 对比后，选择 "保留最高分辨率"
+        let groups_to_process = scan_result.groups.clone();
+
+        // === PHASE 4: 调用 delete_duplicates 执行批量删除 ===
+        let request = DeleteDuplicatesRequest {
+            groups: groups_to_process,
+            policy: RetentionPolicy::KeepHighestResolution,
+            dry_run: Some(false),
+        };
+
+        // 执行删除逻辑 (复用 delete_duplicates 命令核心逻辑)
+        let mut deleted_count = 0usize;
+        let mut kept_count = 0usize;
+        let mut freed_bytes: i64 = 0;
+
+        for group in &request.groups {
+            if group.images.len() < 2 { continue; }
+
+            let mut sorted = group.images.clone();
+            // 应用 KeepHighestResolution 排序逻辑
+            sorted.sort_by(|a, b| {
+                let area_a = (a.width.unwrap_or(0) * a.height.unwrap_or(0)) as i64;
+                let area_b = (b.width.unwrap_or(0) * b.height.unwrap_or(0)) as i64;
+                area_b.cmp(&area_a).then_with(|| a.file_size.cmp(&b.file_size))
+            });
+
+            // 保留第一张 (最高分辨率)
+            kept_count += 1;
+
+            // 删除其余重复项
+            for to_delete in sorted.iter().skip(1) {
+                let conn = db.open_connection().expect("DB 连接应成功");
+                conn.execute(
+                    "DELETE FROM search_index WHERE image_id = ?",
+                    rusqlite::params![to_delete.image_id],
+                ).expect("删除 search_index 应成功");
+
+                conn.execute(
+                    "DELETE FROM images WHERE id = ?",
+                    rusqlite::params![to_delete.image_id],
+                ).expect("删除 images 记录应成功");
+
+                freed_bytes += to_delete.file_size;
+                deleted_count += 1;
+            }
+        }
+
+        // === PHASE 5: 验证最终数据库状态 ===
+        assert_eq!(deleted_count, 2, "应删除 2 张重复图片");
+        assert_eq!(kept_count, 2, "应保留 2 张高分辨率图片");
+        assert_eq!(freed_bytes, 3_000_000, "释放空间应为 1MB + 2MB = 3MB");
+
+        let conn = db.open_connection().expect("DB 连接应成功");
+        let remaining_count: i64 = conn.query_row(
+            "SELECT count(*) FROM images", [], |r| r.get(0)
+        ).expect("查询应成功");
+
+        assert_eq!(remaining_count, 3, "剩余 3 张图片 (2张高分辨率 + 1张唯一)");
+
+        // 验证具体保留/删除的图片
+        let id1_kept: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM images WHERE id = 1)", [], |r| r.get(0)).unwrap();
+        assert!(id1_kept, "ID 1 (1920x1080 组A高分) 应保留");
+
+        let id2_deleted: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM images WHERE id = 2)", [], |r| r.get(0)).unwrap();
+        assert!(!id2_deleted, "ID 2 (1280x720 组A低分) 应已删除");
+
+        let id3_kept: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM images WHERE id = 3)", [], |r| r.get(0)).unwrap();
+        assert!(id3_kept, "ID 3 (3840x2160 组B高分) 应保留");
+
+        let id4_deleted: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM images WHERE id = 4)", [], |r| r.get(0)).unwrap();
+        assert!(!id4_deleted, "ID 4 (1920x1080 组B低分) 应已删除");
+
+        let id5_untouched: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM images WHERE id = 5)", [], |r| r.get(0)).unwrap();
+        assert!(id5_untouched, "ID 5 (唯一图片) 不应受影响");
     }
 }

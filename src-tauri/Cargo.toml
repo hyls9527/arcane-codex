@@ -19,7 +19,7 @@ serde_json = "1"
 # 数据库
 rusqlite = { version = "0.31", features = ["bundled", "chrono"] }
 r2d2 = "0.8"
-r2d2_sqlite = { version = "0.24", features = ["bundled"] }
+r2d2_sqlite = "0.24"
 
 # 异步运行时
 tokio = { version = "1", features = ["full"] }

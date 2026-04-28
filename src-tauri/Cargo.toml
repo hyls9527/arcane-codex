@@ -9,7 +9,6 @@ build = "build.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
-embed-manifest = "1.5"
 
 [dependencies]
 tauri = { version = "2", features = [] }

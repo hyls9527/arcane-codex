@@ -1,4 +1,5 @@
-import { listen, emit, UnlistenFn } from '@tauri-apps/api/event'
+import { listen, emit } from '@tauri-apps/api/event'
+import type { UnlistenFn } from '@tauri-apps/api/event'
 import type { Page } from '@/types/image'
 
 export type AppRoute = Page

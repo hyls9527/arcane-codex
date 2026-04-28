@@ -17,7 +17,7 @@ interface ImageGridProps {
     thumbnail_path: string
     file_name: string
     ai_tags?: string[]
-    ai_status?: 'pending' | 'processing' | 'completed' | 'failed'
+    ai_status?: 'pending' | 'processing' | 'completed' | 'failed' | string
   }>
   selectedIds?: Set<number>
   onImageClick?: (id: number) => void

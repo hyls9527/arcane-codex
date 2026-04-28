@@ -4,7 +4,7 @@ export interface AppImage {
   id: number
   file_path: string
   file_name: string
-  thumbnail_path?: string
+  thumbnail_path: string
   ai_status: AIStatusEnum | string
   ai_tags?: string[]
   ai_description?: string

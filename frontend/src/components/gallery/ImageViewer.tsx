@@ -4,7 +4,8 @@ import { X, ZoomIn, ZoomOut, RotateCw, Download, Trash2, Camera, Clock, MapPin, 
 import { motion, AnimatePresence } from 'framer-motion'
 import { cn } from '@/utils/cn'
 import { NarrativePrompt } from './NarrativePrompt'
-import { getNarratives, writeNarrative, Narrative } from '@/lib/api'
+import { getNarratives, writeNarrative } from '@/lib/api'
+import type { Narrative } from '@/lib/api'
 
 interface ImageViewerProps {
   image: {

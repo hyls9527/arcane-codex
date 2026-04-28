@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { Brain, CheckCircle, AlertCircle, Loader2, Search } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import { useConfigStore, CONFIG_KEYS } from '@/stores/useConfigStore'
-import { testLmStudioConnection } from '@/lib/api'
+// import { testLmStudioConnection } from '@/lib/api'
 import { invoke } from '@tauri-apps/api/core'
 
 const PROVIDER_OPTIONS = [
@@ -101,7 +101,7 @@ export function AIConfig({ onChange }: { onChange?: () => void }) {
 
     try {
       await invoke('set_inference_provider', { provider, model, apiKey: apiKey || null })
-      const result = await invoke<string>('test_inference_connection')
+      await invoke<string>('test_inference_connection')
       setTestResult('success')
     } catch (e) {
       setTestResult('error')

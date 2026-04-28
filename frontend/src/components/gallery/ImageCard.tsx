@@ -10,7 +10,7 @@ interface ImageCardProps {
   fileName: string
   aiDescription?: string
   tags?: string[]
-  aiStatus?: 'pending' | 'processing' | 'completed' | 'failed'
+  aiStatus?: 'pending' | 'processing' | 'completed' | 'failed' | string
   isSelected?: boolean
   onClick?: (id: number) => void
   onToggleSelect?: (id: number) => void

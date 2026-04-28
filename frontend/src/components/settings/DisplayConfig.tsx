@@ -1,7 +1,7 @@
 import { useTranslation } from 'react-i18next'
 import { Palette } from 'lucide-react'
 import { useThemeStore } from '@/stores/useThemeStore'
-import type { Theme } from '@/stores/useThemeStore'
+// import type { Theme } from '@/stores/useThemeStore'
 import { useConfigStore, CONFIG_KEYS } from '@/stores/useConfigStore'
 
 interface DisplayConfigProps {

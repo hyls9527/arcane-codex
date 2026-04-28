@@ -20,7 +20,7 @@ export function useAIActions() {
   })
   const [aiLoading, setAiLoading] = useState(false)
 
-  const addToastRef = useState<(message: string, type: 'error' | 'success' | 'info') => void>(null as any)
+  // const addToastRef = useState<(message: string, type: 'error' | 'success' | 'info') => void>(null as any)
 
   const loadAIStatus = useCallback(async () => {
     try {

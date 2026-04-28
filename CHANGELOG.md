@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.0.0-rc] - 2024-XX-XX
+## [1.0.0] - 2025-04-29
 
 ### Added
 - 图片管理：批量导入、缩略图生成、EXIF 元数据提取

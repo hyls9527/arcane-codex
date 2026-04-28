@@ -1,5 +1,6 @@
 import { useReducer, useEffect, useRef, useCallback } from 'react'
-import { listen, UnlistenFn } from '@tauri-apps/api/event'
+import { listen } from '@tauri-apps/api/event'
+import type { UnlistenFn } from '@tauri-apps/api/event'
 import type { AppRoute, RoutePayload } from './events'
 import { ROUTE_CHANGE, ROUTE_BACK, ROUTE_FORWARD } from './events'
 

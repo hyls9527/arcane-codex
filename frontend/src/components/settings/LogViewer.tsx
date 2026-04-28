@@ -1,7 +1,8 @@
 import { useEffect, useState, useRef, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
-import { FileText, Download, Trash2, RefreshCw, Filter, ChevronDown, ChevronUp } from 'lucide-react'
-import { getLogEntries, getLogStats, exportLogs, clearLogs, LogEntry, LogFileStats } from '@/lib/api'
+import { FileText, Download, Trash2, RefreshCw, ChevronDown, ChevronUp } from 'lucide-react'
+import { getLogEntries, getLogStats, exportLogs, clearLogs } from '@/lib/api'
+import type { LogEntry, LogFileStats } from '@/lib/api'
 
 const levelColors: Record<string, string> = {
   INFO: 'text-blue-500 bg-blue-50 dark:bg-blue-900/20',

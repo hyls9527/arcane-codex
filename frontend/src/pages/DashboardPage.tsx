@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { HardDrive, BarChart3, Tag, Sparkles, RefreshCw, AlertCircle, CheckCircle, Clock } from 'lucide-react'
-import { getLibraryStats, LibraryStats, getAccuracyTrend, AccuracyTrend } from '@/lib/api'
+import { getLibraryStats, getAccuracyTrend } from '@/lib/api'
+import type { LibraryStats, AccuracyTrend } from '@/lib/api'
 import { AccuracyChart } from '@/components/dashboard/AccuracyChart'
 
 export function DashboardPage() {

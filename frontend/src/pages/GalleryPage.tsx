@@ -8,7 +8,6 @@ import { useImageStore } from '../stores/useImageStore'
 import { type AppImage } from '../types/image'
 import {
   importImages,
-  searchImages,
   checkBrokenLinks,
 } from '../lib/api'
 
@@ -36,11 +35,6 @@ export function GalleryPage({
     searchResults,
     searchLoading,
     hasSearched,
-    setSearchQuery,
-    setSearchResults,
-    setSearchLoading,
-    setHasSearched,
-    clearSearch,
   } = useImageStore()
 
   const hasFilters = !!(filters.ai_status || filters.category || filters.date_from || filters.date_to || (filters.tags && filters.tags.length > 0))
@@ -51,25 +45,7 @@ export function GalleryPage({
     }
   }, [filters.ai_status, filters.category, filters.date_from, filters.date_to, filters.tags])
 
-  const handleSearch = useCallback(async (query: string) => {
-    setSearchQuery(query)
-    if (!query.trim()) {
-      clearSearch()
-      return
-    }
-    try {
-      setSearchLoading(true)
-      const results = await searchImages(query, { page: 0, page_size: 50 })
-      setSearchResults(results || [])
-      setHasSearched(true)
-    } catch (err) {
-      addToast(`${t('errors.searchFailed')}: ${err instanceof Error ? err.message : t('common.unknownError')}`, 'error')
-      setSearchResults([])
-      setHasSearched(true)
-    } finally {
-      setSearchLoading(false)
-    }
-  }, [addToast, t, setSearchQuery, setSearchResults, setSearchLoading, setHasSearched, clearSearch])
+  // Search is handled by SearchPanel component
 
   const handleFilesSelected = useCallback(async (files: File[]) => {
     if (files.length === 0) return

@@ -62,11 +62,16 @@ npm run tauri dev
 3. **等待分析**: AI 会自动为每张照片生成标签和描述
 4. **开始搜索**: 在搜索框里输入任何描述，比如"那只橘猫"
 
+## 下载安装
+
+- **Windows MSI**: [ArcaneCodex_1.0.0_x64_en-US.msi](https://github.com/hyls9527/arcane-codex/releases/download/v1.0.0/ArcaneCodex_1.0.0_x64_en-US.msi)
+- **Windows EXE**: [ArcaneCodex_1.0.0_x64-setup.exe](https://github.com/hyls9527/arcane-codex/releases/download/v1.0.0/ArcaneCodex_1.0.0_x64-setup.exe)
+
 ## 现状
 
 - ✅ 核心功能完成（202 个开发任务全部搞定）
 - ✅ 测试覆盖率 96.7%
-- 🔄 准备发布 v1.0.0-rc
+- ✅ v1.0.0 已发布
 
 ## 限制
 

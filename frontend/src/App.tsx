@@ -25,7 +25,7 @@ import {
   archiveImage,
   safeExport,
 } from './lib/api'
-import { type AppImage, type Page, type Toast } from './types/image'
+import type { AppImage, Toast } from './types/image'
 import { useStateRouter } from './router/state-router'
 import { navigate } from './router/events'
 
@@ -94,7 +94,7 @@ function App() {
     }
   }, [addToast, t])
 
-  const handleViewerReAnalyze = useCallback(async (id: number) => {
+  const handleViewerReAnalyze = useCallback(async (_id: number) => {
     try {
       await retryFailedAI()
       await startAIProcessing()

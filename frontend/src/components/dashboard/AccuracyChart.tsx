@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { TrendingUp, BarChart3, Shield } from 'lucide-react'
-import { getAccuracyTrend, AccuracyTrend } from '@/lib/api'
+import { getAccuracyTrend } from '@/lib/api'
+import type { AccuracyTrend } from '@/lib/api'
 
 interface AccuracyChartProps {
   initialData?: AccuracyTrend | null

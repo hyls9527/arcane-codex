@@ -59,6 +59,9 @@ jobs:
         working-directory: frontend
         run: npm ci
 
+      - name: Install Tauri CLI
+        run: npm install --save-dev @tauri-apps/cli
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -72,7 +75,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tauriScript: npx tauri
           tagName: v__VERSION__
           releaseName: "ArcaneCodex v__VERSION__"
           releaseBody: "See the assets below."

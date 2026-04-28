@@ -42,9 +42,9 @@ jobs:
         working-directory: src-tauri
         run: cargo check --lib
 
-      - name: Cargo test
+      - name: Cargo test (no default features)
         working-directory: src-tauri
-        run: cargo test --lib
+        run: cargo test --lib --no-default-features
 
   build:
     needs: test

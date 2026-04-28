@@ -148,6 +148,13 @@ impl AppError {
         }
     }
 
+    pub fn internal(message: impl Into<String>) -> Self {
+        AppError::Config {
+            code: "INT_001".to_string(),
+            message: message.into(),
+        }
+    }
+
     pub fn error_code(&self) -> &str {
         match self {
             AppError::Database { code, .. } => code,

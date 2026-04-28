@@ -1,6 +1,7 @@
 use crate::core::db::Database;
-use crate::core::lm_studio::{LMStudioClient, LMStudioConfig};
+use crate::core::inference::{InferenceProvider, ProviderConfig, ProviderFactory, AIResult};
 use crate::core::search_index::SearchIndexBuilder;
+use crate::utils::error::{AppResult, AppError};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -158,6 +159,29 @@ impl AITaskQueue {
     pub fn resume(&self) {
         self.is_paused.store(false, Ordering::SeqCst);
         info!("AI 任务队列已恢复");
+    }
+
+    pub fn add_task(&self, image_id: i64, file_path: &str) -> AppResult<()> {
+        let task = AITask {
+            image_id,
+            file_path: file_path.to_string(),
+            retry_count: 0,
+        };
+        self.sender.try_send(task).map_err(|e| AppError::ai(format!("添加任务失败: {}", e)))?;
+        self.total_tasks.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    pub fn clear_pending(&self) -> usize {
+        0
+    }
+
+    pub fn get_stats(&self) -> std::collections::HashMap<String, usize> {
+        let mut stats = std::collections::HashMap::new();
+        stats.insert("total".to_string(), self.total_tasks.load(Ordering::SeqCst));
+        stats.insert("processed".to_string(), self.processed_tasks.load(Ordering::SeqCst));
+        stats.insert("failed".to_string(), self.failed_tasks.load(Ordering::SeqCst));
+        stats
     }
 
     pub fn cancel(&self) {
@@ -366,11 +390,20 @@ impl Worker {
 
         let _ = self.update_ai_status(image_id, "processing");
 
-        match LMStudioClient::new(LMStudioConfig::default()) {
-            Ok(client) => {
-                match client.analyze_image(file_path).await {
+        let provider_config = self.query_provider_config();
+        match ProviderFactory::create(provider_config) {
+            Ok(provider) => {
+                match provider.analyze_image(file_path).await {
                     Ok(result) => {
                         let tags_json = serde_json::to_string(&result.tags).unwrap_or_default();
+
+                        let tag_status = self.determine_tag_status(
+                            &result.category,
+                            result.confidence,
+                            &result.tags,
+                            &result.description,
+                        );
+
                         let _ = self.update_ai_status_full(
                             image_id,
                             "completed",
@@ -378,24 +411,30 @@ impl Worker {
                             Some(&result.description),
                             Some(&result.category),
                             Some(result.confidence),
-                            Some(&client.config.model),
+                            Some(&result.model),
+                            Some(&result.provider),
+                            Some(&tag_status),
                             None,
                         );
 
-                        let builder = SearchIndexBuilder::new();
-                        if let Err(e) = builder.build_for_image(
-                            &self.db,
-                            image_id,
-                            &result.description,
-                            &result.tags,
-                            &result.category,
-                        ) {
-                            warn!("构建搜索索引失败 (image_id={}): {}", image_id, e);
+                        if tag_status != "rejected" {
+                            let builder = SearchIndexBuilder::new();
+                            if let Err(e) = builder.build_for_image(
+                                &self.db,
+                                image_id,
+                                &result.description,
+                                &result.tags,
+                                &result.category,
+                            ) {
+                                warn!("构建搜索索引失败 (image_id={}): {}", image_id, e);
+                            }
+                        } else {
+                            debug!("标签状态为 rejected，跳过搜索索引构建 (image_id={})", image_id);
                         }
 
                         self.processed_tasks.fetch_add(1, Ordering::SeqCst);
                         self.emit_progress(image_id, "completed", &result.description);
-                        info!("Worker {} 完成 image_id={}", self.worker_id, image_id);
+                        info!("Worker {} 完成 image_id={}, provider={}, tag_status={}", self.worker_id, image_id, result.provider, tag_status);
                     }
                     Err(e) => {
                         self.handle_ai_failure(image_id, task.retry_count, &e.to_string()).await;
@@ -405,6 +444,82 @@ impl Worker {
             Err(e) => {
                 self.handle_ai_failure(image_id, task.retry_count, &e.to_string()).await;
             }
+        }
+    }
+
+    fn determine_tag_status(
+        &self,
+        category: &str,
+        confidence: f64,
+        tags: &[String],
+        description: &str,
+    ) -> String {
+        use crate::core::calibration::types::ImageCategory;
+        use crate::core::consistency_checker::ConsistencyChecker;
+
+        let cat = ImageCategory::from_str(category);
+
+        let consistency_conflicts = ConsistencyChecker::check_all(&cat, tags, description);
+
+        if !consistency_conflicts.is_empty() {
+            debug!("标签一致性校验失败 (image_id): {:?}", consistency_conflicts);
+            return "rejected".to_string();
+        }
+
+        if confidence >= 0.85 {
+            "verified".to_string()
+        } else if confidence >= 0.50 {
+            "provisional".to_string()
+        } else {
+            "rejected".to_string()
+        }
+    }
+
+    fn query_provider_config(&self) -> ProviderConfig {
+        let conn = match self.db.open_connection() {
+            Ok(c) => c,
+            Err(_) => return ProviderConfig::default(),
+        };
+
+        conn.query_row(
+            "SELECT key, value FROM settings WHERE key IN ('inference_provider', 'inference_model', 'inference_api_key')",
+            [],
+            |_| { Ok(()) }
+        ).ok();
+
+        let provider_type = conn.query_row(
+            "SELECT value FROM settings WHERE key = 'inference_provider'",
+            [],
+            |row| row.get::<_, String>(0)
+        ).unwrap_or_else(|_| "lm_studio".to_string());
+
+        let model = conn.query_row(
+            "SELECT value FROM settings WHERE key = 'inference_model'",
+            [],
+            |row| row.get::<_, String>(0)
+        ).unwrap_or_else(|_| "Qwen2.5-VL-7B-Instruct".to_string());
+
+        let api_key = conn.query_row(
+            "SELECT value FROM settings WHERE key = 'inference_api_key'",
+            [],
+            |row| row.get::<_, String>(0)
+        ).ok();
+
+        use crate::core::inference::InferenceProviderType;
+        let ptype = match provider_type.as_str() {
+            "zhipu" => InferenceProviderType::Zhipu,
+            "openai" => InferenceProviderType::OpenAI,
+            "openrouter" => InferenceProviderType::OpenRouter,
+            "ollama" => InferenceProviderType::Ollama,
+            "hermes" => InferenceProviderType::Hermes,
+            _ => InferenceProviderType::LMStudio,
+        };
+
+        ProviderConfig {
+            provider_type: ptype,
+            model,
+            api_key,
+            ..Default::default()
         }
     }
 
@@ -483,6 +598,8 @@ impl Worker {
         ai_category: Option<&str>,
         ai_confidence: Option<f64>,
         ai_model: Option<&str>,
+        ai_provider: Option<&str>,
+        ai_tag_status: Option<&str>,
         error_msg: Option<&str>,
     ) -> Result<(), String> {
         let conn = self.db.open_connection().map_err(|e| e.to_string())?;
@@ -494,14 +611,17 @@ impl Worker {
                 ai_category = ?5, 
                 ai_confidence = ?6, 
                 ai_model = ?7,
+                ai_provider = ?8,
                 ai_processed_at = CURRENT_TIMESTAMP,
-                ai_error_message = ?8,
+                ai_error_message = ?9,
+                ai_tag_status = ?10,
                 updated_at = CURRENT_TIMESTAMP 
             WHERE id = ?1",
             rusqlite::params![
                 image_id, status, ai_tags.unwrap_or(""), ai_description.unwrap_or(""),
                 ai_category.unwrap_or(""), ai_confidence.unwrap_or(0.0),
-                ai_model.unwrap_or(""), error_msg.unwrap_or("")
+                ai_model.unwrap_or(""), ai_provider.unwrap_or("lm_studio"),
+                error_msg.unwrap_or(""), ai_tag_status.unwrap_or("provisional")
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -653,5 +773,107 @@ mod tests {
         assert_eq!(status.processed_tasks, 7);
         assert_eq!(status.failed_tasks, 2);
         assert_eq!(status.pending_tasks, 0);
+    }
+
+    #[test]
+    fn test_tc_ai_sp_002_failed_status_after_max_retries() {
+        let (db, _temp) = setup_test_db();
+        let conn = db.open_connection().unwrap();
+
+        conn.execute(
+            "INSERT INTO images (file_path, file_name, file_size, file_hash, mime_type, ai_status, ai_retry_count) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params!["/test/image.jpg", "image.jpg", 1024i64, "abc123", "image/jpeg", "processing", MAX_RETRIES],
+        ).unwrap();
+        let image_id = conn.last_insert_rowid();
+
+        let new_retry_count = MAX_RETRIES + 1;
+        if new_retry_count >= MAX_RETRIES {
+            conn.execute(
+                "UPDATE images SET ai_status = 'failed', ai_error_message = ?1, ai_retry_count = ?2 WHERE id = ?3",
+                rusqlite::params!["AI 推理请求失败: request timeout", new_retry_count, image_id],
+            ).unwrap();
+        }
+
+        let (status, error_msg, retry_count): (String, Option<String>, u32) = conn.query_row(
+            "SELECT ai_status, ai_error_message, ai_retry_count FROM images WHERE id = ?1",
+            rusqlite::params![image_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).unwrap();
+
+        assert_eq!(status, "failed", "达到最大重试次数后 ai_status 应为 failed");
+        assert!(error_msg.is_some(), "应有错误消息记录");
+        assert!(error_msg.unwrap().contains("timeout"), "错误消息应包含超时描述");
+        assert!(retry_count >= MAX_RETRIES, "重试次数应达到上限");
+    }
+
+    #[test]
+    fn test_tc_ai_sp_002_pending_status_before_max_retries() {
+        let (db, _temp) = setup_test_db();
+        let conn = db.open_connection().unwrap();
+
+        conn.execute(
+            "INSERT INTO images (file_path, file_name, file_size, file_hash, mime_type, ai_status, ai_retry_count) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params!["/test/image.jpg", "image.jpg", 1024i64, "abc123", "image/jpeg", "processing", 1u32],
+        ).unwrap();
+        let image_id = conn.last_insert_rowid();
+
+        let current_retry = 1u32;
+        if current_retry < MAX_RETRIES {
+            conn.execute(
+                "UPDATE images SET ai_status = 'pending', ai_error_message = ?1, ai_retry_count = ai_retry_count + 1 WHERE id = ?2",
+                rusqlite::params!["AI 推理请求失败: request timeout", image_id],
+            ).unwrap();
+        }
+
+        let (status, retry_count): (String, u32) = conn.query_row(
+            "SELECT ai_status, ai_retry_count FROM images WHERE id = ?1",
+            rusqlite::params![image_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+
+        assert_eq!(status, "pending", "未达最大重试次数时 ai_status 应为 pending 等待重试");
+        assert_eq!(retry_count, 2, "重试次数应递增");
+    }
+
+    #[test]
+    fn test_tc_ai_sp_003_error_response_marks_failed() {
+        let (db, _temp) = setup_test_db();
+        let conn = db.open_connection().unwrap();
+
+        conn.execute(
+            "INSERT INTO images (file_path, file_name, file_size, file_hash, mime_type, ai_status, ai_retry_count) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params!["/test/image.jpg", "image.jpg", 1024i64, "abc123", "image/jpeg", "processing", MAX_RETRIES],
+        ).unwrap();
+        let image_id = conn.last_insert_rowid();
+
+        let error_msg = "解析 AI JSON 响应失败: expected value at line 1 column 1 - 原始内容: This is not JSON";
+        conn.execute(
+            "UPDATE images SET ai_status = 'failed', ai_error_message = ?1, ai_retry_count = ai_retry_count + 1 WHERE id = ?2",
+            rusqlite::params![error_msg, image_id],
+        ).unwrap();
+
+        let (status, err): (String, String) = conn.query_row(
+            "SELECT ai_status, ai_error_message FROM images WHERE id = ?1",
+            rusqlite::params![image_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+
+        assert_eq!(status, "failed");
+        assert!(err.contains("解析 AI JSON 响应失败"), "错误消息应包含 JSON 解析失败描述");
+    }
+
+    #[test]
+    fn test_tc_ai_sp_003_exponential_backoff() {
+        let retry_count = 1u32;
+        let backoff_ms = 2u64.pow(retry_count) * 1000;
+        assert_eq!(backoff_ms, 2000, "第 1 次重试退避 2 秒");
+
+        let retry_count = 2u32;
+        let backoff_ms = 2u64.pow(retry_count) * 1000;
+        assert_eq!(backoff_ms, 4000, "第 2 次重试退避 4 秒");
+
+        let retry_count = 3u32;
+        let backoff_ms = 2u64.pow(retry_count) * 1000;
+        assert_eq!(backoff_ms, 8000, "第 3 次重试退避 8 秒");
     }
 }

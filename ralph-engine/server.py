@@ -1,12 +1,12 @@
 """
 Ralph MCP Server - 开发纪律强制执行器
 
-通过 MCP 协议暴露 6 个核心 Tool，Agent 无法绕过规则：
+通过 MCP 协议暴露 5 个核心 Tool，Agent 无法绕过规则：
 1. next_task() - 物理顺序优先：只返回第一个未完成任务
 2. verify() - 测试即交付：必须看到 PASS 才允许状态转移
 3. update_status() - 状态真实性：先改文件再计算状态（completed 需先通过 verify）
-4. acquire_lock() / release_lock() - 单线程专注：同一时刻只有一个任务执行
-5. get_progress() - 实时进度查询
+4. get_progress() - 实时进度查询
+5. verify_and_complete() - 验证并完成：自动验证后标记完成
 """
 
 import json
@@ -517,27 +517,6 @@ def update_status(task_id: str, status: str, reason: str = "") -> dict:
     }
 
 
-@mcp.tool()
-def acquire_lock(task_id: str) -> dict:
-    """获取焦点锁。同一时刻只允许一个任务处于执行状态。这是'单线程专注'铁律的强制执行点。必须在开始执行任务前调用。锁状态持久化到文件，重启不丢失。
-
-    Args:
-        task_id: 要执行的任务标识
-    """
-    success, message = _lock.acquire(task_id)
-    return {"acquired": success, "task_id": task_id, "message": message, "lock": _lock.status()}
-
-
-@mcp.tool()
-def release_lock(task_id: str) -> dict:
-    """释放焦点锁。任务完成或放弃后必须调用。只有持有锁的任务才能释放。锁状态持久化到文件。
-
-    Args:
-        task_id: 要释放锁的任务标识
-    """
-    success, message = _lock.release(task_id)
-    return {"released": success, "task_id": task_id, "message": message, "lock": _lock.status()}
-
 
 @mcp.tool()
 def get_progress() -> dict:
@@ -547,12 +526,10 @@ def get_progress() -> dict:
 
     tasks_progress = TaskFileParser.count_progress(tasks_file)
     tests_progress = TaskFileParser.count_progress(tests_file)
-    lock_status = _lock.status()
 
     return {
         "tasks": tasks_progress,
         "tests": tests_progress,
-        "lock": lock_status,
         "tasks_file": tasks_file,
         "tests_file": tests_file,
     }
@@ -566,7 +543,6 @@ def get_state() -> str:
 
     tasks_progress = TaskFileParser.count_progress(tasks_file)
     tests_progress = TaskFileParser.count_progress(tests_file)
-    lock_status = _lock.status()
 
     lines = [
         "# RALPH STATE (Auto-generated, read-only)",
@@ -587,9 +563,8 @@ def get_state() -> str:
         f"- Pending: {tests_progress['pending']}",
         f"- Completion: {tests_progress['completed'] / max(tests_progress['total'], 1) * 100:.1f}%",
         "",
-        "## Focus Lock",
-        f"- Locked: {lock_status['locked']}",
-        f"- Current Task: {lock_status['current_task'] or 'None'}",
+        "## Multi-Agent Coordination",
+        "- Single-thread lock: REMOVED (支持多 Agent 并发协作)",
     ]
     return "\n".join(lines)
 
@@ -604,20 +579,16 @@ def ralph_workflow(task_description: str) -> str:
     return f"""你正在 Ralph Protocol 治理下工作。必须严格遵守以下流程：
 
 1. 调用 next_task() 获取当前任务
-2. 调用 acquire_lock(task_id) 获取焦点锁
-3. 如果锁获取失败，等待当前任务完成，不要强行执行
-4. 执行任务: {task_description}
-5. 调用 verify(task_id) 验证任务完成
-6. 如果验证失败，修复问题后重新验证
-7. 如果验证通过，调用 update_status(task_id, "completed") 更新状态
-8. 调用 release_lock(task_id) 释放焦点锁
-9. 回到步骤 1
+2. 执行任务：{task_description}
+3. 调用 verify(task_id) 验证任务完成
+4. 如果验证失败，修复问题后重新验证
+5. 如果验证通过，调用 update_status(task_id, "completed") 更新状态
+6. 回到步骤 1
 
 铁律提醒：
 - 禁止跳步：必须按物理顺序执行
 - 禁止跳过测试：必须先 verify() 通过，才能 update_status("completed")
 - 禁止凭记忆更新状态：必须通过 MCP Tool 修改
-- 禁止并发：同一时刻只能执行一个任务
 - update_status("completed") 如果没有先 verify() 会被拒绝"""
 
 

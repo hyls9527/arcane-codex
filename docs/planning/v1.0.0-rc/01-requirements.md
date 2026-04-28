@@ -195,7 +195,7 @@
 - 磁盘空间充足 (应用 + 数据 < 500MB，不含图片)
 
 ### 4.2 约束
-- 所有新代码必须位于 `e:\智能体项目优化\`，原项目仅参考
+- 所有新代码必须位于 `e:\knowledge base\`，原项目仅参考
 - 原项目 `D:\Personal\Desktop\arcane-codex-src\` 严禁修改
 - 不依赖任何云服务 (除 LM Studio 本地服务)
 - 仅 targeting Windows 10+

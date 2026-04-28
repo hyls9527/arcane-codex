@@ -1,22 +1,28 @@
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import i18n from '@/i18n'
-import { Settings as SettingsIcon, Brain, Palette, Database, Info } from 'lucide-react'
+import { Settings as SettingsIcon, Brain, Palette, Database, Info, FileText, Bell, Shield } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import { AIConfig } from './AIConfig'
 import { DisplayConfig } from './DisplayConfig'
 import { StorageConfig } from './StorageConfig'
 import { AboutPage } from './AboutPage'
+import { LogViewer } from './LogViewer'
+import { NotificationConfig } from './NotificationConfig'
+import { PrivacyConfig } from './PrivacyConfig'
 import { useConfigStore } from '@/stores/useConfigStore'
 import { useThemeStore } from '@/stores/useThemeStore'
 import type { Theme } from '@/stores/useThemeStore'
 
-type SettingsTab = 'ai' | 'display' | 'storage' | 'about'
+type SettingsTab = 'ai' | 'display' | 'storage' | 'notifications' | 'privacy' | 'logs' | 'about'
 
 const tabKeys = [
   { id: 'ai' as const, icon: Brain, i18nKey: 'settings.ai.title' },
   { id: 'display' as const, icon: Palette, i18nKey: 'settings.display.title' },
   { id: 'storage' as const, icon: Database, i18nKey: 'settings.storage.title' },
+  { id: 'notifications' as const, icon: Bell, i18nKey: 'settings.notifications.title' },
+  { id: 'privacy' as const, icon: Shield, i18nKey: 'settings.privacy.title' },
+  { id: 'logs' as const, icon: FileText, i18nKey: 'logs.title' },
   { id: 'about' as const, icon: Info, i18nKey: 'settings.about.title' },
 ]
 
@@ -56,6 +62,9 @@ export function SettingsPage() {
     ai: AIConfig,
     display: DisplayConfig,
     storage: StorageConfig,
+    notifications: NotificationConfig,
+    privacy: PrivacyConfig,
+    logs: LogViewer,
     about: AboutPage,
   }[activeTab]
 

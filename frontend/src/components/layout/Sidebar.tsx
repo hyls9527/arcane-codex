@@ -5,19 +5,19 @@ import {
   Settings, 
   Sparkles, 
   Copy,
+  BarChart3,
   ChevronLeft,
   ChevronRight
 } from 'lucide-react'
 import { cn } from '@/utils/cn'
-
-type Page = 'gallery' | 'settings' | 'ai' | 'dedup'
+import type { Page } from '@/types/image'
+import { navigate } from '@/router/events'
 
 interface SidebarProps {
-  onNavigate: (page: Page) => void
   currentPage: Page
 }
 
-export function Sidebar({ onNavigate, currentPage }: SidebarProps) {
+export function Sidebar({ currentPage }: SidebarProps) {
   const { t } = useTranslation()
   const [collapsed, setCollapsed] = useState(false)
   
@@ -25,8 +25,13 @@ export function Sidebar({ onNavigate, currentPage }: SidebarProps) {
     { id: 'gallery' as const, label: t('navigation.gallery'), icon: ImageIcon },
     { id: 'ai' as const, label: t('navigation.aiTagging'), icon: Sparkles },
     { id: 'dedup' as const, label: t('navigation.dedup'), icon: Copy },
+    { id: 'dashboard' as const, label: t('dashboard.title'), icon: BarChart3 },
     { id: 'settings' as const, label: t('navigation.settings'), icon: Settings },
   ]
+  
+  const handleNavigate = (page: Page) => {
+    navigate({ route: page, source: 'sidebar' })
+  }
   
   return (
     <aside className={cn(
@@ -56,7 +61,7 @@ export function Sidebar({ onNavigate, currentPage }: SidebarProps) {
         {navItems.map(({ id, label, icon: Icon }) => (
           <button
             key={id}
-            onClick={() => onNavigate(id)}
+            onClick={() => handleNavigate(id)}
             className={cn(
               'flex items-center w-full gap-3 px-3 py-2 rounded-lg transition-colors',
               'hover:bg-gray-100 dark:hover:bg-gray-700',

@@ -83,7 +83,7 @@
 ## 3. 目录结构规范
 
 ```
-e:\智能体项目优化\
+e:\knowledge base\
 ├── .trae/
 │   └── rules/
 │       └── project_rules.md

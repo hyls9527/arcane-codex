@@ -461,7 +461,7 @@ python-dotenv==1.0.*      # 环境变量管理
 ## ⚠️ 约束与假设 (Constraints & Assumptions)
 
 ### 必须遵守 (Hard Constraints)
-1. **工作区隔离**: 所有新代码必须位于 `e:\智能体项目优化\` 目录，原项目仅作参考
+1. **工作区隔离**: 所有新代码必须位于 `e:\knowledge base\` 目录，原项目仅作参考
 2. **本地优先**: 不依赖任何云服务（除 LM Studio 本地服务外）
 3. **Windows 10+**: 仅 targeting Windows 10 1809+ (Build 17763)
 4. **离线可用**: 核心浏览/管理功能无需网络，AI 功能需 LM Studio 在线

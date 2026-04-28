@@ -348,3 +348,107 @@ export async function getNarratives(imageId: number): Promise<Narrative[]> {
 export async function queryAssociations(query: string, limit?: number): Promise<AssociationResult[]> {
   return invoke<AssociationResult[]>('query_associations', { query, limit: limit ?? 20 })
 }
+
+// ===== Dashboard Statistics =====
+
+export interface AIProgressStats {
+  pending: number
+  processing: number
+  completed: number
+  failed: number
+  verified: number
+  provisional: number
+  rejected: number
+}
+
+export interface StorageStats {
+  total_size_bytes: number
+  average_image_size: number
+  largest_image_size: number
+}
+
+export interface LibraryStats {
+  total_images: number
+  category_distribution: [string, number][]
+  ai_progress: AIProgressStats
+  storage_usage: StorageStats
+  tag_cloud: [string, number][]
+}
+
+export async function getLibraryStats(): Promise<LibraryStats> {
+  return invoke<LibraryStats>('get_library_stats')
+}
+
+export interface AccuracyDataPoint {
+  date: string
+  total: number
+  correct: number
+  accuracy: number
+}
+
+export interface CategoryAccuracy {
+  category: string
+  total: number
+  verified: number
+  provisional: number
+  rejected: number
+  average_confidence: number
+}
+
+export interface CalibrationComparison {
+  before_ece: number
+  after_ece: number
+  improvement_percent: number
+}
+
+export interface AccuracyTrend {
+  daily_data: AccuracyDataPoint[]
+  category_accuracy: CategoryAccuracy[]
+  calibration_comparison: CalibrationComparison | null
+}
+
+export async function getAccuracyTrend(days: number = 30): Promise<AccuracyTrend> {
+  return invoke<AccuracyTrend>('get_accuracy_trend', { days })
+}
+
+// ===== Log Management =====
+
+export interface LogEntry {
+  timestamp: string
+  level: string
+  target: string
+  message: string
+}
+
+export interface LogFileStats {
+  path: string
+  size_bytes: number
+  line_count: number
+  exists: boolean
+}
+
+export interface LogResponse {
+  entries: LogEntry[]
+  total_lines: number
+  has_more: boolean
+}
+
+export async function getLogEntries(
+  maxLines?: number,
+  offset?: number,
+  levelFilter?: string
+): Promise<LogResponse> {
+  return invoke<LogResponse>('get_log_entries', { maxLines: maxLines ?? 200, offset: offset ?? 0, levelFilter })
+}
+
+export async function getLogStats(): Promise<LogFileStats> {
+  return invoke<LogFileStats>('get_log_stats')
+}
+
+export async function exportLogs(exportPath: string, levelFilter?: string): Promise<number> {
+  return invoke<number>('export_logs', { exportPath, levelFilter })
+}
+
+export async function clearLogs(): Promise<number> {
+  return invoke<number>('clear_logs')
+}

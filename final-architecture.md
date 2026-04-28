@@ -4,7 +4,7 @@
 > **版本**: 1.0.0-rc  
 > **日期**: 2026-04-27  
 > **状态**: 🟡 待用户确认 (Pending Approval)  
-> **工作区**: `e:\智能体项目优化\`  
+> **工作区**: `e:\knowledge base\`  
 > **原项目**: `D:\Personal\Desktop\arcane-codex-src\` (⚠️ 只读参考，严禁修改)
 
 ---
@@ -899,7 +899,7 @@ cargo tauri build
 ## 📂 九、项目目录结构
 
 ```
-e:\智能体项目优化\
+e:\knowledge base\
 ├── .trae/
 │   └── rules/
 │       └── project_rules.md           # 团队开发规范
@@ -989,7 +989,7 @@ e:\智能体项目优化\
 ### 10.1 必须遵守 (Hard Constraints)
 | 约束 | 说明 |
 |------|------|
-| **工作区隔离** | 所有新代码必须位于 `e:\智能体项目优化\`, 原项目仅参考 |
+| **工作区隔离** | 所有新代码必须位于 `e:\knowledge base\`, 原项目仅参考 |
 | **本地优先** | 不依赖任何云服务 (除 LM Studio 本地服务) |
 | **Windows 10+** | 仅 targeting Windows 10 1809+ (Build 17763) |
 | **离线可用** | 核心浏览/管理功能无需网络 |

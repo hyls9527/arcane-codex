@@ -1,5 +1,0 @@
-vault.enc
-.env
-.vault_tmp_*.enc
-__pycache__/
-*.pyc

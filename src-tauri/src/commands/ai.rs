@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::State;
 use tracing::info;
+use std::sync::Arc;
 use crate::core::ai_queue::AITaskQueue;
 use crate::core::db::Database;
 use crate::utils::error::AppResult;
@@ -30,7 +31,7 @@ pub struct AIResult {
 
 #[tauri::command]
 pub async fn start_ai_processing(
-    queue: State<'_, AITaskQueue>,
+    queue: State<'_, Arc<AITaskQueue>>,
 ) -> AppResult<AIStatus> {
     info!("启动 AI 处理队列");
 

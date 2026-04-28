@@ -9,6 +9,11 @@ export const CONFIG_KEYS = {
   THUMBNAIL_SIZE: 'thumbnail_size',
   THEME: 'theme',
   LANGUAGE: 'language',
+  NOTIFICATION_ENABLED: 'notification_enabled',
+  NOTIFICATION_AI_COMPLETE: 'notification_ai_complete',
+  NOTIFICATION_DEDUP_COMPLETE: 'notification_dedup_complete',
+  PRIVACY_SEND_ANALYTICS: 'privacy_send_analytics',
+  PRIVACY_SHARE_DATA: 'privacy_share_data',
 } as const
 
 export type ConfigKey = (typeof CONFIG_KEYS)[keyof typeof CONFIG_KEYS]
@@ -21,6 +26,11 @@ interface ConfigState {
   thumbnailSize: number
   theme: string
   language: string
+  notificationEnabled: boolean
+  notificationAiComplete: boolean
+  notificationDedupComplete: boolean
+  privacySendAnalytics: boolean
+  privacyShareData: boolean
 
   // Whether settings have been loaded from backend
   isLoaded: boolean
@@ -41,6 +51,12 @@ function parseConfigValue(key: ConfigKey, value: string): unknown {
     case CONFIG_KEYS.AI_TIMEOUT:
     case CONFIG_KEYS.THUMBNAIL_SIZE:
       return Number(value)
+    case CONFIG_KEYS.NOTIFICATION_ENABLED:
+    case CONFIG_KEYS.NOTIFICATION_AI_COMPLETE:
+    case CONFIG_KEYS.NOTIFICATION_DEDUP_COMPLETE:
+    case CONFIG_KEYS.PRIVACY_SEND_ANALYTICS:
+    case CONFIG_KEYS.PRIVACY_SHARE_DATA:
+      return value === 'true' || value === '1'
     default:
       return value
   }
@@ -53,6 +69,11 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
   thumbnailSize: 300,
   theme: 'system',
   language: 'zh',
+  notificationEnabled: true,
+  notificationAiComplete: true,
+  notificationDedupComplete: true,
+  privacySendAnalytics: false,
+  privacyShareData: false,
 
   isLoaded: false,
   pendingChanges: {},
@@ -81,6 +102,21 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
             break
           case CONFIG_KEYS.LANGUAGE:
             state.language = value
+            break
+          case CONFIG_KEYS.NOTIFICATION_ENABLED:
+            state.notificationEnabled = value === 'true' || value === '1'
+            break
+          case CONFIG_KEYS.NOTIFICATION_AI_COMPLETE:
+            state.notificationAiComplete = value === 'true' || value === '1'
+            break
+          case CONFIG_KEYS.NOTIFICATION_DEDUP_COMPLETE:
+            state.notificationDedupComplete = value === 'true' || value === '1'
+            break
+          case CONFIG_KEYS.PRIVACY_SEND_ANALYTICS:
+            state.privacySendAnalytics = value === 'true' || value === '1'
+            break
+          case CONFIG_KEYS.PRIVACY_SHARE_DATA:
+            state.privacyShareData = value === 'true' || value === '1'
             break
         }
       }
@@ -136,6 +172,21 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
           break
         case CONFIG_KEYS.LANGUAGE:
           state.language = parsed as string
+          break
+        case CONFIG_KEYS.NOTIFICATION_ENABLED:
+          state.notificationEnabled = parsed as boolean
+          break
+        case CONFIG_KEYS.NOTIFICATION_AI_COMPLETE:
+          state.notificationAiComplete = parsed as boolean
+          break
+        case CONFIG_KEYS.NOTIFICATION_DEDUP_COMPLETE:
+          state.notificationDedupComplete = parsed as boolean
+          break
+        case CONFIG_KEYS.PRIVACY_SEND_ANALYTICS:
+          state.privacySendAnalytics = parsed as boolean
+          break
+        case CONFIG_KEYS.PRIVACY_SHARE_DATA:
+          state.privacyShareData = parsed as boolean
           break
       }
     }

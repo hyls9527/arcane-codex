@@ -172,6 +172,14 @@
     "saveFailed": "保存失败",
     "ai": {
       "title": "AI 配置",
+      "provider": "推理提供者",
+      "typeLocal": "本地",
+      "typeCloud": "云端",
+      "model": "模型",
+      "modelPlaceholder": "选择模型或手动输入",
+      "apiKey": "API Key",
+      "apiKeyPlaceholder": "输入你的 API Key",
+      "localUrl": "本地服务地址",
       "lmStudioUrl": "LM Studio 地址",
       "lmStudioUrlPlaceholder": "http://localhost:1234",
       "concurrency": "并发数",
@@ -180,9 +188,13 @@
       "timeout": "超时时间 (秒)",
       "testConnection": "测试连接",
       "connectionSuccess": "连接成功！",
-      "connectionFailed": "连接失败，请检查地址和 LM Studio 状态",
+      "connectionFailed": "连接失败",
       "urlInvalid": "URL 格式无效，请使用 http:// 或 https:// 开头的地址",
-      "urlInvalidTest": "URL 格式无效，请先修正后再测试连接"
+      "urlInvalidTest": "URL 格式无效，请先修正后再测试连接",
+      "discoverModels": "自动发现模型",
+      "noModelsFound": "未发现可用的本地服务",
+      "discoverFailed": "模型发现失败，请确保服务已启动",
+      "online": "在线"
     },
     "display": {
       "title": "显示设置",
@@ -214,6 +226,23 @@
       "restoreSuccess": "数据库已成功恢复",
       "restoreFailed": "恢复失败，请重试",
       "restoreConfirm": "确定要从备份恢复吗？这将覆盖所有现有数据"
+    },
+    "notifications": {
+      "title": "通知设置",
+      "enabled": "启用通知",
+      "enabledDesc": "开启应用内通知提醒",
+      "aiComplete": "AI 打标完成",
+      "aiCompleteDesc": "AI 分析完成后发送通知",
+      "dedupComplete": "去重扫描完成",
+      "dedupCompleteDesc": "去重扫描完成后发送通知"
+    },
+    "privacy": {
+      "title": "隐私设置",
+      "sendAnalytics": "发送使用分析",
+      "sendAnalyticsDesc": "帮助我们改进产品体验",
+      "shareData": "共享使用数据",
+      "shareDataDesc": "匿名分享使用数据用于优化",
+      "note": "所有数据仅用于产品优化，不会收集个人信息"
     },
     "about": {
       "title": "关于",
@@ -312,5 +341,52 @@
     "writeFailed": "锚定失败，请重试",
     "noNarratives": "还没有记忆锚点",
     "deleteNarrative": "删除这条记忆"
+  },
+  "dashboard": {
+    "title": "数据仪表盘",
+    "totalImages": "图片总数",
+    "categoryDistribution": "分类分布",
+    "tagCloud": "标签词云",
+    "aiProgress": "AI 打标进度",
+    "storageUsage": "存储使用情况",
+    "pending": "待处理",
+    "processing": "处理中",
+    "completed": "已完成",
+    "failed": "失败",
+    "verified": "已验证",
+    "provisional": "待验证",
+    "rejected": "已拒绝",
+    "totalSize": "总占用空间",
+    "averageSize": "平均大小",
+    "largestSize": "最大图片",
+    "uncategorized": "未分类",
+    "refresh": "刷新数据",
+    "loading": "加载统计数据中...",
+    "loadFailed": "加载统计数据失败",
+    "aiAccuracyTrend": "AI 准确率趋势",
+    "lastDays": "{{days}}天",
+    "noAccuracyData": "暂无准确率数据，等待 AI 打标完成后显示",
+    "accuracyByCategory": "按分类准确率",
+    "confidence": "置信度",
+    "calibrationComparison": "校准前后对比",
+    "beforeCalibration": "校准前",
+    "afterCalibration": "校准后",
+    "improvement": "改善幅度",
+    "accuracyImprovement": "准确率提升"
+  },
+  "logs": {
+    "title": "系统日志",
+    "path": "路径",
+    "size": "大小",
+    "totalLines": "总行数",
+    "noLogs": "暂无日志数据",
+    "loading": "加载中...",
+    "loadMore": "加载更多",
+    "target": "来源模块",
+    "exportSuccess": "日志导出成功",
+    "exportFailed": "日志导出失败",
+    "clearConfirm": "确定要清空所有日志吗？",
+    "clearSuccess": "日志已清空",
+    "clearFailed": "清空日志失败"
   }
 }

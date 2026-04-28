@@ -16,7 +16,7 @@ export interface AppImage {
   exif_data?: Record<string, string | number | undefined>
 }
 
-export type Page = 'gallery' | 'settings' | 'ai' | 'dedup'
+export type Page = 'gallery' | 'settings' | 'ai' | 'dedup' | 'dashboard'
 
 export interface Toast {
   id: number

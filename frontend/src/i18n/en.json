@@ -160,6 +160,14 @@
     "saveFailed": "Save failed",
     "ai": {
       "title": "AI Configuration",
+      "provider": "Inference Provider",
+      "typeLocal": "Local",
+      "typeCloud": "Cloud",
+      "model": "Model",
+      "modelPlaceholder": "Select a model or enter manually",
+      "apiKey": "API Key",
+      "apiKeyPlaceholder": "Enter your API Key",
+      "localUrl": "Local Service URL",
       "lmStudioUrl": "LM Studio URL",
       "lmStudioUrlPlaceholder": "http://localhost:1234",
       "concurrency": "Concurrency",
@@ -168,9 +176,13 @@
       "timeout": "Timeout (seconds)",
       "testConnection": "Test Connection",
       "connectionSuccess": "Connected successfully!",
-      "connectionFailed": "Connection failed, please check the URL and LM Studio status",
+      "connectionFailed": "Connection failed",
       "urlInvalid": "Invalid URL format, please use http:// or https:// prefix",
-      "urlInvalidTest": "Invalid URL format, please fix it before testing connection"
+      "urlInvalidTest": "Invalid URL format, please fix it before testing connection",
+      "discoverModels": "Discover Models",
+      "noModelsFound": "No local services found",
+      "discoverFailed": "Model discovery failed, please make sure services are running",
+      "online": "Online"
     },
     "display": {
       "title": "Display Settings",
@@ -202,6 +214,23 @@
       "restoreFailed": "Restore failed",
       "restoreDesc": "Restore database from zip archive backup, existing data will be overwritten",
       "restoreConfirm": "Are you sure you want to restore from backup? This will overwrite all existing data"
+    },
+    "notifications": {
+      "title": "Notifications",
+      "enabled": "Enable Notifications",
+      "enabledDesc": "Turn on in-app notification alerts",
+      "aiComplete": "AI Tagging Complete",
+      "aiCompleteDesc": "Send notification when AI analysis completes",
+      "dedupComplete": "Deduplication Scan Complete",
+      "dedupCompleteDesc": "Send notification when deduplication scan finishes"
+    },
+    "privacy": {
+      "title": "Privacy",
+      "sendAnalytics": "Send Usage Analytics",
+      "sendAnalyticsDesc": "Help us improve the product experience",
+      "shareData": "Share Usage Data",
+      "shareDataDesc": "Anonymously share usage data for optimization",
+      "note": "All data is only used for product optimization, no personal information is collected"
     },
     "about": {
       "title": "About",
@@ -338,5 +367,52 @@
     "writeFailed": "Anchoring failed, please retry",
     "noNarratives": "No memory anchors yet",
     "deleteNarrative": "Delete this memory"
+  },
+  "dashboard": {
+    "title": "Dashboard",
+    "totalImages": "Total Images",
+    "categoryDistribution": "Category Distribution",
+    "tagCloud": "Tag Cloud",
+    "aiProgress": "AI Tagging Progress",
+    "storageUsage": "Storage Usage",
+    "pending": "Pending",
+    "processing": "Processing",
+    "completed": "Completed",
+    "failed": "Failed",
+    "verified": "Verified",
+    "provisional": "Provisional",
+    "rejected": "Rejected",
+    "totalSize": "Total Size",
+    "averageSize": "Average Size",
+    "largestSize": "Largest Image",
+    "uncategorized": "Uncategorized",
+    "refresh": "Refresh Data",
+    "loading": "Loading statistics...",
+    "loadFailed": "Failed to load statistics",
+    "aiAccuracyTrend": "AI Accuracy Trend",
+    "lastDays": "Last {{days}} days",
+    "noAccuracyData": "No accuracy data yet, will display after AI tagging completes",
+    "accuracyByCategory": "Accuracy by Category",
+    "confidence": "Confidence",
+    "calibrationComparison": "Calibration Comparison",
+    "beforeCalibration": "Before Calibration",
+    "afterCalibration": "After Calibration",
+    "improvement": "Improvement",
+    "accuracyImprovement": "Accuracy Improvement"
+  },
+  "logs": {
+    "title": "System Logs",
+    "path": "Path",
+    "size": "Size",
+    "totalLines": "Total Lines",
+    "noLogs": "No logs available",
+    "loading": "Loading...",
+    "loadMore": "Load More",
+    "target": "Source Module",
+    "exportSuccess": "Logs exported successfully",
+    "exportFailed": "Failed to export logs",
+    "clearConfirm": "Are you sure you want to clear all logs?",
+    "clearSuccess": "Logs cleared successfully",
+    "clearFailed": "Failed to clear logs"
   }
 }

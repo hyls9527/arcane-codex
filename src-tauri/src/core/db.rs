@@ -87,6 +87,24 @@ impl Database {
 
         let conn = self.open_connection()?;
         let final_version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        drop(conn);
+
+        if final_version < 4 {
+            info!("Applying migration v4: multi-provider inference support");
+            self.apply_v4_multi_provider()?;
+        }
+
+        let conn = self.open_connection()?;
+        let user_version_after_v4: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        drop(conn);
+
+        if user_version_after_v4 < 5 {
+            info!("Applying migration v5: AI tag status grading");
+            self.apply_v5_ai_tag_status()?;
+        }
+
+        let conn = self.open_connection()?;
+        let final_version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
         info!("Database is up to date (version {})", final_version);
 
         Ok(())
@@ -238,6 +256,117 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_semantic_edges_target ON semantic_edges(target_narrative_id);
 
             PRAGMA user_version = 3;
+        ")?;
+
+        Ok(())
+    }
+
+    fn apply_v4_multi_provider(&self) -> Result<()> {
+        let conn = self.open_connection()?;
+        conn.execute_batch("
+            -- 添加 ai_provider 字段到 images 表
+            ALTER TABLE images ADD COLUMN ai_provider TEXT DEFAULT 'lm_studio';
+            
+            -- 创建 settings 表（如果不存在）
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            
+            -- 插入推理提供者相关配置
+            INSERT OR REPLACE INTO settings (key, value) VALUES
+                ('inference_provider', 'lm_studio'),
+                ('inference_model', 'Qwen2.5-VL-7B-Instruct'),
+                ('inference_api_key', ''),
+                ('inference_timeout', '60');
+            
+            PRAGMA user_version = 4;
+        ")?;
+
+        Ok(())
+    }
+
+    fn apply_v5_ai_tag_status(&self) -> Result<()> {
+        let conn = self.open_connection()?;
+        conn.execute_batch("
+            -- 添加 ai_tag_status 字段到 images 表
+            -- verified: 校准后高置信度，参与搜索
+            -- provisional: 中置信度，标记待验证
+            -- rejected: 低置信度，拒绝入库
+            ALTER TABLE images ADD COLUMN ai_tag_status TEXT DEFAULT 'provisional';
+            
+            -- 为现有数据设置默认状态
+            UPDATE images SET ai_tag_status = 'provisional' 
+            WHERE ai_status = 'completed' AND ai_tag_status IS NULL;
+            
+            -- 为未处理的图片设置为 rejected (无 AI 分析)
+            UPDATE images SET ai_tag_status = 'rejected' 
+            WHERE ai_status = 'pending' AND ai_tag_status IS NULL;
+            
+            -- 为失败的处理设置为 rejected
+            UPDATE images SET ai_tag_status = 'rejected' 
+            WHERE ai_status = 'failed' AND ai_tag_status IS NULL;
+            
+            -- 创建校准样本表（用于收集人工标注数据）
+            CREATE TABLE IF NOT EXISTS calibration_samples (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                image_id INTEGER NOT NULL,
+                predicted_category TEXT NOT NULL,
+                raw_confidence REAL NOT NULL,
+                is_correct BOOLEAN NOT NULL,
+                annotated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (image_id) REFERENCES images(id)
+            );
+            
+            -- 创建校准报告历史表
+            CREATE TABLE IF NOT EXISTS calibration_reports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                report_json TEXT NOT NULL,
+                total_samples INTEGER NOT NULL,
+                overall_ece REAL NOT NULL,
+                computed_at TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+            
+            -- 创建校准曲线缓存表
+            CREATE TABLE IF NOT EXISTS calibration_curves (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                category TEXT NOT NULL,
+                curve_json TEXT NOT NULL,
+                total_samples INTEGER NOT NULL,
+                computed_at TEXT NOT NULL,
+                UNIQUE(category)
+            );
+            
+            -- 创建标签修正历史表
+            CREATE TABLE IF NOT EXISTS tag_corrections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                image_id INTEGER NOT NULL,
+                old_tags JSON NOT NULL,
+                new_tags JSON NOT NULL,
+                corrected_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (image_id) REFERENCES images(id)
+            );
+            
+            -- 创建错误模式库表
+            CREATE TABLE IF NOT EXISTS error_patterns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pattern_name TEXT NOT NULL,
+                pattern_description TEXT,
+                occurrence_count INTEGER NOT NULL DEFAULT 1,
+                first_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+                last_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(pattern_name)
+            );
+            
+            -- 索引
+            CREATE INDEX IF NOT EXISTS idx_images_ai_tag_status ON images(ai_tag_status);
+            CREATE INDEX IF NOT EXISTS idx_cal_samples_category ON calibration_samples(predicted_category);
+            CREATE INDEX IF NOT EXISTS idx_cal_samples_image_id ON calibration_samples(image_id);
+            CREATE INDEX IF NOT EXISTS idx_tag_corrections_image_id ON tag_corrections(image_id);
+            
+            PRAGMA user_version = 5;
         ")?;
 
         Ok(())

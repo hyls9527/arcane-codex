@@ -9,6 +9,7 @@ build = "build.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+embed-manifest = "1.5"
 
 [dependencies]
 tauri = { version = "2", features = [] }
@@ -53,6 +54,7 @@ hex = "0.4"
 
 # 并发
 async-channel = "2"
+async-trait = "0.1"
 
 # 序列化
 uuid = { version = "1", features = ["v4", "serde"] }

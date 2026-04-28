@@ -43,10 +43,35 @@ fn main() {
             commands::settings::backup_database,
             commands::settings::restore_database,
             commands::settings::test_lm_studio_connection,
+            commands::inference_settings::get_inference_config,
+            commands::inference_settings::set_inference_provider,
+            commands::inference_settings::test_inference_connection,
+            commands::inference_settings::discover_available_models,
             commands::export::export_data,
             commands::narrative::write_narrative,
             commands::narrative::get_narratives,
             commands::narrative::query_associations,
+            commands::tag_correction::record_tag_correction,
+            commands::tag_correction::get_tag_correction_history,
+            commands::tag_correction::get_all_tag_corrections,
+            commands::error_patterns::record_error_pattern,
+            commands::error_patterns::get_error_patterns,
+            commands::error_patterns::check_error_pattern_exists,
+            commands::error_patterns::delete_error_pattern,
+            commands::error_patterns::get_high_frequency_error_patterns,
+            commands::batch_ops::start_batch_ai_tag,
+            commands::batch_ops::get_batch_ai_status,
+            commands::batch_ops::pause_batch_ai_task,
+            commands::batch_ops::resume_batch_ai_task,
+            commands::batch_ops::cancel_batch_ai_task,
+            commands::batch_ops::batch_tag_correction,
+            commands::batch_ops::batch_export,
+            commands::batch_ops::get_library_stats,
+            commands::batch_ops::get_accuracy_trend,
+            commands::batch_ops::get_log_entries,
+            commands::batch_ops::get_log_stats,
+            commands::batch_ops::export_logs,
+            commands::batch_ops::clear_logs,
         ])
         .setup(|app| {
             // 初始化数据库
@@ -61,7 +86,7 @@ fn main() {
             // 初始化任务队列
             let queue = core::ai_queue::AITaskQueue::new(Arc::new(db), None)
                 .with_app_handle(app_handle.clone());
-            app.manage(queue);
+            app.manage(Arc::new(queue));
             
             Ok(())
         })

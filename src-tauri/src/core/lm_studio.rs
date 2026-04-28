@@ -412,4 +412,88 @@ mod tests {
         let result = client.parse_ai_response("not valid json");
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_tc_ai_sp_002_timeout_configuration() {
+        let config = LMStudioConfig::default();
+        assert_eq!(config.timeout_secs, 60, "默认超时应为 60 秒");
+
+        let client = LMStudioClient::new(config).unwrap();
+        assert_eq!(client.config.timeout_secs, 60);
+
+        let custom_config = LMStudioConfig {
+            timeout_secs: 120,
+            ..Default::default()
+        };
+        let client = LMStudioClient::new(custom_config).unwrap();
+        assert_eq!(client.config.timeout_secs, 120);
+    }
+
+    #[test]
+    fn test_tc_ai_sp_002_timeout_error_message() {
+        let config = LMStudioConfig {
+            timeout_secs: 1,
+            ..Default::default()
+        };
+        let client = LMStudioClient::new(config).unwrap();
+        assert_eq!(client.config.timeout_secs, 1);
+    }
+
+    #[test]
+    fn test_tc_ai_sp_003_non_json_text_response() {
+        let client = LMStudioClient::new(LMStudioConfig::default()).unwrap();
+        let plain_text = "This is not a JSON response, just plain text from the AI model.";
+        let result = client.parse_ai_response(plain_text);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("解析 AI JSON 响应失败"),
+            "错误消息应包含解析失败描述，实际: {}", err_msg
+        );
+    }
+
+    #[test]
+    fn test_tc_ai_sp_003_html_error_response() {
+        let client = LMStudioClient::new(LMStudioConfig::default()).unwrap();
+        let html_response = r#"<html><body><h1>502 Bad Gateway</h1><p>Server Error</p></body></html>"#;
+        let result = client.parse_ai_response(html_response);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_tc_ai_sp_003_partial_json_response() {
+        let client = LMStudioClient::new(LMStudioConfig::default()).unwrap();
+        let partial_json = r#"{"tags": ["猫", "动物"], "description": "一只猫"#;
+        let result = client.parse_ai_response(partial_json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_tc_ai_sp_003_empty_string_response() {
+        let client = LMStudioClient::new(LMStudioConfig::default()).unwrap();
+        let result = client.parse_ai_response("");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_tc_ai_sp_003_markdown_wrapped_json() {
+        let client = LMStudioClient::new(LMStudioConfig::default()).unwrap();
+        let markdown_json = r#"```json
+{"tags": ["测试"], "description": "测试图片", "category": "其他", "confidence": 0.8}
+```"#;
+        let result = client.parse_ai_response(markdown_json);
+        assert!(result.is_err(), "Markdown 包裹的 JSON 应解析失败（含 ``` 标记）");
+    }
+
+    #[test]
+    fn test_tc_ai_sp_003_json_with_wrong_types() {
+        let client = LMStudioClient::new(LMStudioConfig::default()).unwrap();
+        let wrong_types = r#"{"tags": "not_an_array", "description": 123, "category": true, "confidence": "high"}"#;
+        let result = client.parse_ai_response(wrong_types);
+        assert!(result.is_ok(), "字段类型错误时应使用默认值而非报错");
+        let ai_result = result.unwrap();
+        assert!(ai_result.tags.is_empty(), "tags 非数组时应为空");
+        assert_eq!(ai_result.category, "other");
+        assert_eq!(ai_result.confidence, 0.5);
+    }
 }

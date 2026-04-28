@@ -4,23 +4,43 @@ import { MainLayout } from './MainLayout'
 import { Sidebar } from './Sidebar'
 import { TopBar } from './TopBar'
 
-// Mock useThemeStore
 vi.mock('@/stores/useThemeStore', () => ({
   useThemeStore: vi.fn(() => ({ applyTheme: vi.fn() })),
 }))
 
-// Mock useConfigStore
 vi.mock('@/stores/useConfigStore', () => ({
   useConfigStore: vi.fn(() => ({ theme: 'light', language: 'zh', updateField: vi.fn() })),
   CONFIG_KEYS: { THEME: 'theme', LANGUAGE: 'language' },
 }))
 
-// Mock i18n
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    t: (key: string) => key,
+    t: (key: string) => {
+      const translations: Record<string, string> = {
+        'navigation.gallery': '图库',
+        'navigation.aiTagging': 'AI 打标',
+        'navigation.dedup': '去重',
+        'navigation.settings': '设置',
+        'navigation.expandSidebar': '展开侧边栏',
+        'navigation.collapseSidebar': '折叠侧边栏',
+        'dashboard.title': '数据仪表盘',
+        'topBar.searchPlaceholder': '搜索图片...',
+        'topBar.toggleLanguage': '切换语言',
+        'topBar.toggleTheme': '切换主题',
+      }
+      return translations[key] || key
+    },
     i18n: { changeLanguage: vi.fn(), language: 'zh' },
   }),
+}))
+
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: vi.fn(() => Promise.resolve(vi.fn())),
+  emit: vi.fn(() => Promise.resolve()),
+}))
+
+vi.mock('@/router/events', () => ({
+  navigate: vi.fn(),
 }))
 
 describe('布局组件单元测试', () => {
@@ -48,10 +68,8 @@ describe('布局组件单元测试', () => {
   })
 
   describe('Sidebar', () => {
-    const mockOnNavigate = vi.fn()
-
     it('应该渲染所有导航项', () => {
-      render(<Sidebar onNavigate={mockOnNavigate} currentPage="gallery" />)
+      render(<Sidebar currentPage="gallery" />)
       expect(screen.getByText('图库')).toBeInTheDocument()
       expect(screen.getByText('AI 打标')).toBeInTheDocument()
       expect(screen.getByText('去重')).toBeInTheDocument()
@@ -59,28 +77,18 @@ describe('布局组件单元测试', () => {
     })
 
     it('应该高亮当前页面', () => {
-      render(<Sidebar onNavigate={mockOnNavigate} currentPage="ai" />)
+      render(<Sidebar currentPage="ai" />)
       const aiButton = screen.getByText('AI 打标').closest('button')
       expect(aiButton).toHaveClass('bg-primary-50')
     })
 
-    it('应该在点击导航项时调用 onNavigate', () => {
-      render(<Sidebar onNavigate={mockOnNavigate} currentPage="gallery" />)
-      const settingsButton = screen.getByText('设置').closest('button')
-      settingsButton?.click()
-      expect(mockOnNavigate).toHaveBeenCalledWith('settings')
-    })
-
     it('应该支持折叠功能', async () => {
-      render(<Sidebar onNavigate={mockOnNavigate} currentPage="gallery" />)
-      // 初始应该显示 "图库" 文本
+      render(<Sidebar currentPage="gallery" />)
       expect(screen.getByText('图库')).toBeInTheDocument()
       
-      // 找到折叠按钮并点击（使用无障碍标签）
       const collapseButton = screen.getByRole('button', { name: '折叠侧边栏' })
       await fireEvent.click(collapseButton)
       
-      // 等待更新完成
       await waitFor(() => {
         expect(screen.queryByText('图库')).not.toBeInTheDocument()
       })

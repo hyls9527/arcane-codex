@@ -653,6 +653,71 @@
     - [x] 添加"重新分析"按钮
     - [x] 添加"安全导出"按钮（复制原文件到指定位置）
     - [x] tsc --noEmit 零编译错误
+
+## Phase 8: 生产级功能 (Production-Ready Features)
+
+> **来源**: Phase 7 完成后规划。聚焦管理后台、批量操作、数据可视化、用户中心。
+
+### 8.1 批量操作
+- [x] **8.1.1 批量 AI 打标**
+    - [x] 选择多张图片进行批量 AI 分析
+    - [x] 批量任务进度展示
+    - [x] 支持暂停/恢复/取消批量任务
+    - [x] 添加单元测试
+
+- [x] **8.1.2 批量标签修正**
+    - [x] 多选图片批量修改标签
+    - [x] 支持标签批量添加/删除/替换
+    - [x] 修正历史批量展示
+    - [x] 添加单元测试
+
+- [x] **8.1.3 批量导出**
+    - [x] 支持批量导出图片+元数据
+    - [x] 导出格式选择 (JSON/CSV/XML)
+    - [x] 导出进度展示
+    - [x] 添加单元测试
+
+### 8.2 数据可视化
+- [x] **8.2.1 图片库统计仪表盘**
+    - [x] 图片总数/分类分布/标签词云
+    - [x] AI 打标进度统计
+    - [x] 存储使用情况
+    - [x] 添加 i18n 翻译键
+
+- [x] **8.2.2 AI 准确率趋势图**
+    - [x] 按时间展示 AI 打标准确率变化
+    - [x] 按类别展示准确率分布
+    - [x] 校准前后对比
+    - [x] 添加单元测试
+
+### 8.3 管理后台
+- [x] **8.3.1 系统设置管理**
+    - [x] AI 推理源配置管理
+    - [x] 数据库备份/恢复
+    - [x] 日志查看/导出
+    - [x] 添加 i18n 翻译键
+
+- [x] **8.3.2 用户偏好设置**
+    - [x] 主题切换/语言切换
+    - [x] 通知设置
+    - [x] 隐私设置
+    - [x] 添加单元测试
+
+### 8.4 性能优化
+- [x] **8.4.1 大数据量分页**
+    - [x] 后端支持分页查询 (LIMIT/OFFSET)
+    - [x] 前端虚拟滚动优化
+    - [x] 添加单元测试
+
+- [x] **8.4.2 缓存优化**
+    - [x] 图片列表缓存
+    - [x] AI 结果缓存
+    - [x] 添加单元测试
+
+### 8.5 编译验证
+- [x] **8.5.1 双端验证**
+    - [x] cargo check 零编译错误
+    - [x] tsc --noEmit 零编译错误
     - [x] 添加中英文翻译键
 
 - [x] **5.3.3 AI 结果列表 + Per-Item 重试** (已完成 ✅)
@@ -760,5 +825,156 @@
     - [x] en.json 添加 narrative 命名空间 15 个键
 
 - [x] **5.7.7 编译验证** (已完成 ✅)
+    - [x] cargo check 零编译错误
+    - [x] tsc --noEmit 零编译错误
+
+---
+
+## Phase 6: 多推理源 + 模型自动发现 (Multi-Inference Source + Model Discovery)
+
+> **来源**: Swarm Debate 产出 + 用户需求。支持本地/云端自由切换，自动检测可用模型。
+
+### 6.1 推理提供者抽象层
+- [x] **6.1.1 创建 `core/inference.rs` trait 抽象**
+    - [x] 定义 `InferenceProvider` trait (name, model, analyze_image, health_check)
+    - [x] 定义 `ProviderConfig` 结构体 (provider_type, base_url, model, api_key, timeout)
+    - [x] 定义 `InferenceProviderType` 枚举 (LMStudio, Ollama, Hermes, OpenAI, Zhipu, OpenRouter)
+    - [x] 定义 `AIResult` 结构体 (tags, description, category, confidence, raw_response, provider, model)
+    - [x] 实现 `ProviderFactory::create(config)` 动态创建提供者实例
+    - [x] 添加单元测试验证 trait 接口正确性
+
+### 6.2 本地推理适配器
+- [x] **6.2.1 LM Studio 适配器**
+    - [x] 实现 `OpenAICompatibleAdapter` 包装 LMStudioClient
+    - [x] 转发 analyze_image 和 health_check 调用
+    - [x] 验证 LM Studio /v1/models API 返回格式正确
+
+- [x] **6.2.2 Ollama 适配器**
+    - [x] 实现 OllamaProvider (base_url: http://127.0.0.1:11434)
+    - [x] 实现 /api/generate 端点调用
+    - [x] 支持多模态模型 (llava, bakllava 等)
+
+- [x] **6.2.3 Hermes One-Click 适配器**
+    - [x] 实现 HermesProvider (base_url: http://127.0.0.1:18789)
+    - [x] 实现 OpenAI 兼容 API 调用
+    - [x] 验证 Hermes 网关协议兼容性
+
+### 6.3 云端推理适配器
+- [x] **6.3.1 智谱 GLM-4-Flash 适配器**
+    - [x] 实现 ZhipuProvider (https://open.bigmodel.cn/api/paas/v4/chat/completions)
+    - [x] 实现图片 base64 编码 + data URL 格式
+    - [x] 实现 API Key 认证
+    - [x] 实现 JSON 响应解析
+    - [x] 添加单元测试 (mock HTTP)
+
+- [x] **6.3.2 OpenAI 适配器**
+    - [x] 实现 OpenAIClient (https://api.openai.com/v1/chat/completions)
+    - [x] 支持 GPT-4o / GPT-4o-mini 等多模态模型
+    - [x] 实现 API Key 认证
+    - [x] 添加单元测试 (mock HTTP)
+
+- [x] **6.3.3 OpenRouter 适配器**
+    - [x] 实现 OpenRouterClient (https://openrouter.ai/api/v1/chat/completions)
+    - [x] 支持免费模型 (50次/天限制)
+    - [x] 实现 API Key 认证
+    - [x] 添加单元测试 (mock HTTP)
+
+### 6.4 模型自动发现
+- [x] **6.4.1 ModelDiscoveryService**
+    - [x] 实现 scan_all() 扫描所有已知本地服务端口
+    - [x] 实现 scan_service() 调用 /v1/models API
+    - [x] 定义 DiscoveredModel 结构体 (provider, model_id, port, is_online)
+    - [x] 扫描服务: LM Studio (1234), Ollama (11434), Hermes (18789)
+    - [x] 添加单元测试验证扫描逻辑
+
+### 6.5 AI Worker 重构
+- [x] **6.5.1 Worker 使用 trait 对象**
+    - [x] 重构 `process_task` 使用 `ProviderFactory::create(config)`
+    - [x] 从数据库读取 inference_provider 配置
+    - [x] 支持运行时切换推理提供者
+    - [x] 保留原有失败重试逻辑
+
+### 6.6 数据库迁移 v4
+- [x] **6.6.1 添加推理提供者配置**
+    - [x] 创建 settings 表 (key, value, updated_at)
+    - [x] 插入默认配置: inference_provider=lm_studio, inference_model, inference_api_key, inference_timeout
+    - [x] images 表添加 ai_provider 字段
+    - [x] 实现 apply_v4_multi_provider 迁移函数
+
+### 6.7 Tauri 命令
+- [x] **6.7.1 推理设置命令**
+    - [x] 创建 commands/inference_settings.rs
+    - [x] 实现 get_inference_config 命令
+    - [x] 实现 set_inference_provider 命令
+    - [x] 实现 test_inference_connection 命令
+    - [x] 实现 discover_available_models 命令
+    - [x] main.rs 注册 4 个新命令
+
+### 6.8 前端设置页面
+- [x] **6.8.1 推理源选择器**
+    - [x] Settings 页面添加推理源下拉选择 (LM Studio / Ollama / Hermes / 智谱 / OpenAI / OpenRouter)
+    - [x] 选择本地源时隐藏 API Key 输入框
+    - [x] 选择云端源时显示 API Key 输入框
+    - [x] 添加"测试连接"按钮
+    - [x] 添加"自动发现模型"按钮，显示扫描结果
+    - [x] 添加 i18n 翻译键
+
+### 6.9 编译验证
+- [x] **6.9.1 双端验证**
+    - [x] cargo check 零编译错误
+    - [x] tsc --noEmit 零编译错误
+
+---
+
+## Phase 7: AI 打标准确率提升 (AI Tagging Accuracy Improvement)
+
+> **来源**: Swarm Debate 产出。核心洞察：接近 100% 准确率不是提升模型能力，而是通过架构隔离不可靠性。
+
+### 7.1 置信度校准层
+- [x] **7.1.1 实现置信度校准模块**
+    - [x] 不使用模型输出的 confidence 字段
+    - [x] 基于验证集数据建立校准曲线 (model confidence → real accuracy)
+    - [x] 每类标签独立校准（动物/风景/文档不同曲线）
+    - [x] 实现 ECE (Expected Calibration Error) 计算
+    - [x] 添加单元测试验证校准逻辑
+
+### 7.2 独立验证层
+- [x] **7.2.1 CLIP zero-shot 分类验证**
+    - [x] 集成 open_clip (Python sidecar 或 FFI)
+    - [x] 实现 CLIP zero-shot 分类作为独立验证源
+    - [x] 视觉模型结果与 CLIP 结果交叉校验
+    - [x] 两者矛盾时拒绝入库
+
+- [x] **7.2.2 标签一致性校验**
+    - [x] 实现分类与标签矛盾检测
+    - [x] 实现描述与标签矛盾检测
+    - [x] 矛盾即拒绝入库，标记为待处理
+
+### 7.3 标签状态分级
+- [x] **7.3.1 数据库 schema 更新**
+    - [x] images 表添加 ai_tag_status 字段 (verified/provisional/rejected)
+    - [x] verified: 校准后高置信度，参与搜索
+    - [x] provisional: 中置信度，标记待验证
+    - [x] rejected: 低置信度，拒绝入库
+
+- [x] **7.3.2 AI Worker 状态更新**
+    - [x] Worker 根据校准后置信度设置 ai_tag_status
+    - [x] verified 标签写入 search_index
+    - [x] provisional 标签写入但不参与搜索
+    - [x] rejected 标签不写入
+
+### 7.4 用户反馈闭环
+- [x] **7.4.1 用户修正标签记录**
+    - [x] 实现用户修正标签 API
+    - [x] 记录修正历史到修正表 (image_id, old_tags, new_tags, corrected_at)
+    - [x] 定期用修正样本微调 prompt (后续实现 - 已添加 TODO 和测试占位)
+
+- [x] **7.4.2 错误模式库**
+    - [x] 记录高频错误模式
+    - [x] 主动规避已知错误
+    - [x] 错误模式反馈到置信度校准 (后续实现 - 已添加 TODO 和测试占位)
+
+### 7.5 编译验证
+- [x] **7.5.1 双端验证**
     - [x] cargo check 零编译错误
     - [x] tsc --noEmit 零编译错误

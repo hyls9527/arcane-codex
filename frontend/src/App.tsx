@@ -16,6 +16,7 @@ import i18n from './i18n'
 import { GalleryPage } from './pages/GalleryPage'
 import { AIPage } from './pages/AIPage'
 import { DedupPage } from './pages/DedupPage'
+import { DashboardPage } from './pages/DashboardPage'
 import {
   deleteImages,
   exportData,
@@ -25,9 +26,11 @@ import {
   safeExport,
 } from './lib/api'
 import { type AppImage, type Page, type Toast } from './types/image'
+import { useStateRouter } from './router/state-router'
+import { navigate } from './router/events'
 
 function App() {
-  const [currentPage, setCurrentPage] = useState<Page>('gallery')
+  const { current: currentPage } = useStateRouter('gallery')
   const { theme } = useConfigStore()
   const { applyTheme } = useThemeStore()
   const { loadConfigs } = useConfigStore()
@@ -129,19 +132,19 @@ function App() {
   const handleViewerTagClick = useCallback((tag: string) => {
     setViewingImage(null)
     setSearchQuery(tag)
-    setCurrentPage('gallery')
+    navigate({ route: 'gallery', source: 'action' })
   }, [setSearchQuery])
 
   const handleSearch = useCallback((query: string) => {
     setSearchQuery(query)
-    setCurrentPage('gallery')
+    navigate({ route: 'gallery', source: 'action' })
   }, [setSearchQuery])
 
   return (
     <ErrorBoundary>
       <div className="h-screen w-screen overflow-hidden bg-background text-foreground">
         <MainLayout>
-          <Sidebar onNavigate={setCurrentPage} currentPage={currentPage} />
+          <Sidebar currentPage={currentPage} />
           <div className="flex flex-col flex-1">
             <TopBar onSearch={handleSearch} searchQuery={searchQuery} />
             <main className="flex-1 overflow-auto p-4">
@@ -160,6 +163,7 @@ function App() {
               {currentPage === 'dedup' && (
                 <DedupPage addToast={addToast} onImagesChanged={loadImages} />
               )}
+              {currentPage === 'dashboard' && <DashboardPage />}
             </main>
           </div>
         </MainLayout>

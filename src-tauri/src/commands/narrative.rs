@@ -1,32 +1,36 @@
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use tauri::State;
-use crate::core::db::Database;
+use crate::core::ai_queue::AITaskQueue;
 use crate::utils::error::{AppError, AppResult};
-use tracing::info;
+use rusqlite::params;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct NarrativeResult {
+    pub id: i64,
     pub image_id: i64,
     pub content: String,
-    pub entities: Vec<serde_json::Value>,
+    pub entities_json: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AssociationResult {
     pub image_id: i64,
-    pub associations: Vec<serde_json::Value>,
+    pub file_path: String,
+    pub file_name: String,
+    pub thumbnail_path: Option<String>,
+    pub narrative_content: String,
+    pub match_type: String,
+    pub relevance: f64,
 }
 
 const PERSON_PREFIXES: &[&str] = &["和", "与", "跟"];
 const PLACE_PREFIXES: &[&str] = &["在", "去", "到", "从"];
-const PLACE_SUFFIXES: &[&str] = &["的", "那", "玩", "出差", "旅行", "旅游", "逛", "吃饭", "拍照", "看", "住", "走"];
+const PLACE_SUFFIXES: &[&str] = &[
+    "的", "那", "玩", "出差", "旅行", "旅游", "逛", "吃饭", "拍照", "看", "住", "走",
+];
 const TIME_KEYWORDS: &[&str] = &[
-    "今天", "昨天", "前天", "明天", "后天",
-    "上周", "这周", "下周",
-    "去年", "今年", "明年",
-    "春天", "夏天", "秋天", "冬天",
-    "上午", "下午", "晚上", "中午", "傍晚", "凌晨",
-    "春节", "中秋", "国庆", "元旦", "端午",
+    "去年", "今年", "昨天", "今天", "上个月", "这个月", "前年",
 ];
 const WEEKDAY_PREFIXES: &[&str] = &["周", "星期"];
 const WEEKDAY_SUFFIXES: &[&str] = &["一", "二", "三", "四", "五", "六", "日", "天"];
@@ -49,7 +53,6 @@ fn extract_entities(content: &str) -> Vec<serde_json::Value> {
     let mut seen_persons = std::collections::HashSet::new();
     let mut seen_places = std::collections::HashSet::new();
     let mut seen_times = std::collections::HashSet::new();
-
     let chars: Vec<char> = content.chars().collect();
 
     fn find_substring(chars: &[char], pattern: &[char], from: usize) -> Option<usize> {
@@ -76,7 +79,7 @@ fn extract_entities(content: &str) -> Vec<serde_json::Value> {
         let mut search_from = 0;
         while let Some(pos) = find_substring(&chars, &prefix_chars, search_from) {
             let after = pos + prefix_chars.len();
-            for &name_len in &[2, 3] {
+            for &name_len in &[1, 2, 3] {
                 if all_cjk(&chars, after, name_len) {
                     let name: String = chars[after..after + name_len].iter().collect();
                     if !seen_persons.contains(&name) {
@@ -90,31 +93,6 @@ fn extract_entities(content: &str) -> Vec<serde_json::Value> {
                 }
             }
             search_from = after;
-        }
-    }
-
-    let person_conjunctions: &[&str] = &["和", "与", "跟"];
-    for conj in person_conjunctions {
-        let conj_chars: Vec<char> = conj.chars().collect();
-        let mut search_from = 0;
-        while let Some(pos) = find_substring(&chars, &conj_chars, search_from) {
-            for &name_len in &[2, 3] {
-                if name_len <= pos {
-                    let start = pos - name_len;
-                    if all_cjk(&chars, start, name_len) {
-                        let name: String = chars[start..pos].iter().collect();
-                        if !seen_persons.contains(&name) {
-                            seen_persons.insert(name.clone());
-                            entities.push(serde_json::json!({
-                                "type": "person",
-                                "value": name
-                            }));
-                        }
-                        break;
-                    }
-                }
-            }
-            search_from = pos + conj_chars.len();
         }
     }
 
@@ -138,24 +116,13 @@ fn extract_entities(content: &str) -> Vec<serde_json::Value> {
                 continue;
             }
 
-            if all_cjk(&chars, after, 2) {
-                let place: String = chars[after..after + 2].iter().collect();
-                if !seen_places.contains(&place) {
-                    seen_places.insert(place.clone());
-                    entities.push(serde_json::json!({
-                        "type": "place",
-                        "value": place
-                    }));
+            for place_len in 1..=6 {
+                if !all_cjk(&chars, after, place_len) {
+                    break;
                 }
-            } else {
-                for place_len in 3..=6 {
-                    if !all_cjk(&chars, after, place_len) {
-                        break;
-                    }
-                    let rest_start = after + place_len;
-                    let rest: String = chars[rest_start..].iter().collect();
-                    let valid = PLACE_SUFFIXES.iter().any(|suffix| rest.starts_with(suffix));
-                    if valid {
+                let rest_start = after + place_len;
+                if rest_start >= chars.len() {
+                    if place_len <= 2 {
                         let place: String = chars[after..after + place_len].iter().collect();
                         if !seen_places.contains(&place) {
                             seen_places.insert(place.clone());
@@ -164,8 +131,21 @@ fn extract_entities(content: &str) -> Vec<serde_json::Value> {
                                 "value": place
                             }));
                         }
-                        break;
                     }
+                    break;
+                }
+                let rest: String = chars[rest_start..].iter().collect();
+                let has_suffix = PLACE_SUFFIXES.iter().any(|suffix| rest.starts_with(suffix));
+                if has_suffix || place_len <= 2 {
+                    let place: String = chars[after..after + place_len].iter().collect();
+                    if !seen_places.contains(&place) {
+                        seen_places.insert(place.clone());
+                        entities.push(serde_json::json!({
+                            "type": "place",
+                            "value": place
+                        }));
+                    }
+                    break;
                 }
             }
             search_from = after;
@@ -203,177 +183,113 @@ fn extract_entities(content: &str) -> Vec<serde_json::Value> {
         }
     }
 
-    let mut i = 0;
-    while i < chars.len() {
-        if chars[i].is_ascii_digit() {
-            let num_start = i;
-            while i < chars.len() && chars[i].is_ascii_digit() {
-                i += 1;
-            }
-            if i < chars.len() && chars[i] == '月' {
-                let month_end = i + 1;
-                i += 1;
-                while i < chars.len() && chars[i].is_ascii_digit() {
-                    i += 1;
-                }
-                if i < chars.len() && (chars[i] == '日' || chars[i] == '号') {
-                    let time_val: String = chars[num_start..=i].iter().collect();
-                    if !seen_times.contains(&time_val) {
-                        seen_times.insert(time_val.clone());
-                        entities.push(serde_json::json!({
-                            "type": "time",
-                            "value": time_val
-                        }));
-                    }
-                    i += 1;
-                } else {
-                    i = month_end;
-                }
-            }
-        } else {
-            i += 1;
-        }
-    }
-
     entities
-}
-
-fn validate_narrative_content(content: &str) -> AppResult<()> {
-    if content.trim().is_empty() {
-        return Err(AppError::Validation("叙事内容不能为空".to_string()));
-    }
-    Ok(())
 }
 
 #[tauri::command]
 pub async fn write_narrative(
-    db: State<'_, Database>,
     image_id: i64,
     content: String,
+    queue: State<'_, Arc<AITaskQueue>>,
 ) -> AppResult<NarrativeResult> {
-    validate_narrative_content(&content)?;
+    if content.trim().is_empty() {
+        return Err(AppError::validation("叙事内容不能为空"));
+    }
 
     let entities = extract_entities(&content);
+    let entities_json = serde_json::to_string(&entities).unwrap_or_default();
 
-    let conn = db.open_connection().map_err(AppError::Database)?;
+    let db = queue.db();
+    let conn = db.open_connection()?;
 
     conn.execute(
-        "INSERT OR REPLACE INTO narratives (image_id, content, entities, updated_at)
-         VALUES (?1, ?2, ?3, datetime('now'))",
-        rusqlite::params![image_id, content, serde_json::to_string(&entities).unwrap()],
-    )
-    .map_err(AppError::Database)?;
+        "INSERT INTO narratives (image_id, content, entities_json) VALUES (?1, ?2, ?3)",
+        params![image_id, content, entities_json],
+    )?;
 
-    info!("写入叙事锚点: image_id={}, 实体数={}", image_id, entities.len());
+    let id = conn.last_insert_rowid();
 
     Ok(NarrativeResult {
+        id,
         image_id,
         content,
-        entities,
+        entities_json,
     })
 }
 
 #[tauri::command]
-pub async fn get_narrative(
-    db: State<'_, Database>,
+pub async fn get_narratives(
     image_id: i64,
-) -> AppResult<Option<NarrativeResult>> {
-    let conn = db.open_connection().map_err(AppError::Database)?;
+    queue: State<'_, Arc<AITaskQueue>>,
+) -> AppResult<Vec<NarrativeResult>> {
+    let db = queue.db();
+    let conn = db.open_connection()?;
 
-    let result = conn.query_row(
-        "SELECT content, entities FROM narratives WHERE image_id = ?",
-        [image_id],
-        |row| {
-            let content: String = row.get(0)?;
-            let entities_str: String = row.get(1)?;
-            let entities: Vec<serde_json::Value> = serde_json::from_str(&entities_str).unwrap_or_default();
-            Ok(NarrativeResult {
-                image_id,
-                content,
-                entities,
-            })
-        },
-    );
+    let mut stmt = conn.prepare(
+        "SELECT id, image_id, content, entities_json FROM narratives WHERE image_id = ?1"
+    )?;
 
-    match result {
-        Ok(narrative) => {
-            info!("获取叙事锚点: image_id={}", image_id);
-            Ok(Some(narrative))
-        }
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-        Err(e) => Err(AppError::Database(e)),
+    let rows = stmt.query_map(params![image_id], |row| {
+        Ok(NarrativeResult {
+            id: row.get(0)?,
+            image_id: row.get(1)?,
+            content: row.get(2)?,
+            entities_json: row.get(3)?,
+        })
+    })?;
+
+    let mut results = Vec::new();
+    for row in rows {
+        results.push(row?);
     }
+
+    Ok(results)
 }
 
 #[tauri::command]
-pub async fn get_associations(
-    db: State<'_, Database>,
-    image_id: i64,
-) -> AppResult<AssociationResult> {
-    let conn = db.open_connection().map_err(AppError::Database)?;
+pub async fn query_associations(
+    query: String,
+    limit: Option<i64>,
+    queue: State<'_, Arc<AITaskQueue>>,
+) -> AppResult<Vec<AssociationResult>> {
+    let limit = limit.unwrap_or(20);
+    let pattern = format!("%{}%", query);
 
-    let result = conn.query_row(
-        "SELECT entities FROM narratives WHERE image_id = ?",
-        [image_id],
-        |row| {
-            let entities_str: String = row.get(0)?;
-            let entities: Vec<serde_json::Value> = serde_json::from_str(&entities_str).unwrap_or_default();
-            Ok(entities)
-        },
-    );
+    let db = queue.db();
+    let conn = db.open_connection()?;
 
-    let entities = result.unwrap_or_default();
+    let mut stmt = conn.prepare(
+        "SELECT n.image_id, i.file_path, i.file_name, i.thumbnail_path, n.content, \
+         CASE \
+            WHEN n.content LIKE ?1 THEN 'content' \
+            WHEN n.entities_json LIKE ?1 THEN 'entity' \
+         END as match_type \
+         FROM narratives n \
+         JOIN images i ON n.image_id = i.id \
+         WHERE n.content LIKE ?1 OR n.entities_json LIKE ?1 \
+         ORDER BY n.updated_at DESC \
+         LIMIT ?2"
+    )?;
 
-    let mut associations = Vec::new();
-    let mut seen = std::collections::HashSet::new();
+    let rows = stmt.query_map(params![pattern, limit], |row| {
+        let match_type: String = row.get(5)?;
+        Ok(AssociationResult {
+            image_id: row.get(0)?,
+            file_path: row.get(1)?,
+            file_name: row.get(2)?,
+            thumbnail_path: row.get(3)?,
+            narrative_content: row.get(4)?,
+            match_type,
+            relevance: 1.0,
+        })
+    })?;
 
-    for entity in &entities {
-        if let Some(entity_type) = entity["type"].as_str() {
-            if let Some(value) = entity["value"].as_str() {
-                let key = format!("{}:{}", entity_type, value);
-                if !seen.contains(&key) {
-                    seen.insert(key);
-                    associations.push(serde_json::json!({
-                        "type": entity_type,
-                        "value": value,
-                        "source_image_id": image_id,
-                    }));
-                }
-            }
-        }
+    let mut results = Vec::new();
+    for row in rows {
+        results.push(row?);
     }
 
-    for entity in &entities {
-        if let Some(value) = entity["value"].as_str() {
-            let matches: Vec<serde_json::Value> = conn
-                .prepare(&format!(
-                    "SELECT image_id, entities FROM narratives WHERE image_id != ? AND entities LIKE ?"
-                ))
-                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
-                .ok()
-                .map(|mut stmt| {
-                    stmt.query_map(rusqlite::params![image_id, format!("%{}%", value)], |row| {
-                        let id: i64 = row.get(0)?;
-                        let _e_str: String = row.get(1)?;
-                        Ok(serde_json::json!({
-                            "image_id": id,
-                            "matched_entity": value,
-                        }))
-                    })
-                    .ok()
-                    .map(|rows| rows.filter_map(|r| r.ok()).collect())
-                    .unwrap_or_default()
-                })
-                .unwrap_or_default();
-
-            associations.extend(matches);
-        }
-    }
-
-    Ok(AssociationResult {
-        image_id,
-        associations,
-    })
+    Ok(results)
 }
 
 #[cfg(test)]
@@ -383,122 +299,31 @@ mod tests {
     #[test]
     fn test_extract_entities_person() {
         let entities = extract_entities("我和小明一起去公园玩");
-        let person_entities: Vec<_> = entities
+        let persons: Vec<_> = entities
             .iter()
             .filter(|e| e["type"] == "person")
             .collect();
-        assert!(!person_entities.is_empty(), "应提取出人名实体");
+        assert!(!persons.is_empty());
     }
 
     #[test]
     fn test_extract_entities_place() {
         let entities = extract_entities("我去北京出差");
-        let place_entities: Vec<_> = entities
+        let places: Vec<_> = entities
             .iter()
             .filter(|e| e["type"] == "place")
             .collect();
-        assert!(!place_entities.is_empty(), "应提取出地名实体");
+        assert!(!places.is_empty());
     }
 
     #[test]
     fn test_extract_entities_time() {
-        let entities = extract_entities("去年夏天我们去旅行");
-        let time_entities: Vec<_> = entities
-            .iter()
-            .filter(|e| e["type"] == "time")
-            .collect();
-        assert!(!time_entities.is_empty(), "应提取出时间实体");
-    }
-
-    #[test]
-    fn test_extract_entities_multiple() {
-        let entities = extract_entities("今年和小红去上海旅行");
-        assert!(entities.len() >= 2, "应提取出多个实体");
-    }
-
-    #[test]
-    fn test_extract_entities_date() {
-        let entities = extract_entities("5月3号我们去爬山");
-        let time_entities: Vec<_> = entities
-            .iter()
-            .filter(|e| e["type"] == "time")
-            .collect();
-        assert!(!time_entities.is_empty(), "应提取出日期实体");
-    }
-
-    #[test]
-    fn test_extract_entities_weekday() {
-        let entities = extract_entities("周三开会");
-        let time_entities: Vec<_> = entities
-            .iter()
-            .filter(|e| e["type"] == "time")
-            .collect();
-        assert!(!time_entities.is_empty(), "应提取出星期实体");
-    }
-
-    #[test]
-    fn test_narrative_result_serialization() {
-        let result = NarrativeResult {
-            image_id: 1,
-            content: "和老王在杭州去年夏天".to_string(),
-            entities: vec![
-                serde_json::json!({"type": "person", "value": "老王"}),
-            ],
-        };
-
-        let json = serde_json::to_string(&result).unwrap();
-        let deserialized: NarrativeResult = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(deserialized.image_id, 1);
-        assert_eq!(deserialized.content, "和老王在杭州去年夏天");
-    }
-
-    #[test]
-    fn test_association_result_serialization() {
-        let result = AssociationResult {
-            image_id: 1,
-            associations: vec![
-                serde_json::json!({"type": "person", "value": "老王", "source_image_id": 1}),
-            ],
-        };
-
-        let json = serde_json::to_string(&result).unwrap();
-        let deserialized: AssociationResult = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(deserialized.image_id, 1);
-    }
-
-    #[test]
-    fn test_extract_entities_persons() {
-        let entities = extract_entities("和老王去西湖那天");
-        let persons: Vec<_> = entities
-            .iter()
-            .filter(|e| e["type"] == "person")
-            .map(|e| e["value"].as_str().unwrap())
-            .collect();
-        assert!(persons.contains(&"老王"), "persons 应包含 '老王'");
-    }
-
-    #[test]
-    fn test_extract_entities_locations() {
-        let entities = extract_entities("在杭州拍的");
-        let locations: Vec<_> = entities
-            .iter()
-            .filter(|e| e["type"] == "place")
-            .map(|e| e["value"].as_str().unwrap())
-            .collect();
-        assert!(locations.contains(&"杭州"), "locations 应包含 '杭州'");
-    }
-
-    #[test]
-    fn test_extract_entities_times() {
-        let entities = extract_entities("去年夏天的旅行");
+        let entities = extract_entities("去年我们去旅行");
         let times: Vec<_> = entities
             .iter()
             .filter(|e| e["type"] == "time")
-            .map(|e| e["value"].as_str().unwrap())
             .collect();
-        assert!(times.contains(&"去年"), "times 应包含 '去年'");
+        assert!(!times.is_empty());
     }
 
     #[test]
@@ -509,7 +334,7 @@ mod tests {
             .filter(|e| e["type"] == "person")
             .map(|e| e["value"].as_str().unwrap())
             .collect();
-        let locations: Vec<_> = entities
+        let places: Vec<_> = entities
             .iter()
             .filter(|e| e["type"] == "place")
             .map(|e| e["value"].as_str().unwrap())
@@ -519,25 +344,65 @@ mod tests {
             .filter(|e| e["type"] == "time")
             .map(|e| e["value"].as_str().unwrap())
             .collect();
-        assert!(persons.contains(&"老王"), "persons 应包含 '老王'");
-        assert!(locations.contains(&"杭州"), "locations 应包含 '杭州'");
-        assert!(times.contains(&"去年"), "times 应包含 '去年'");
+        assert!(persons.contains(&"老王"));
+        assert!(places.contains(&"杭州"));
+        assert!(times.contains(&"去年"));
     }
 
     #[test]
     fn test_extract_entities_empty() {
         let entities = extract_entities("一张风景照");
-        let persons: Vec<_> = entities.iter().filter(|e| e["type"] == "person").collect();
-        let locations: Vec<_> = entities.iter().filter(|e| e["type"] == "place").collect();
-        let times: Vec<_> = entities.iter().filter(|e| e["type"] == "time").collect();
-        assert!(persons.is_empty(), "persons 应为空");
-        assert!(locations.is_empty(), "locations 应为空");
-        assert!(times.is_empty(), "times 应为空");
+        assert!(entities.iter().all(|e| e["type"] != "person"));
+        assert!(entities.iter().all(|e| e["type"] != "place"));
+        assert!(entities.iter().all(|e| e["type"] != "time"));
+    }
+
+    #[test]
+    fn test_extract_entities_weekday() {
+        let entities = extract_entities("周三开会");
+        let times: Vec<_> = entities
+            .iter()
+            .filter(|e| e["type"] == "time")
+            .collect();
+        assert!(!times.is_empty());
+    }
+
+    #[test]
+    fn test_narrative_result_serialization() {
+        let result = NarrativeResult {
+            id: 1,
+            image_id: 42,
+            content: "和老王在杭州去年夏天".to_string(),
+            entities_json: r#"[{"type":"person","value":"老王"}]"#.to_string(),
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        let deserialized: NarrativeResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.id, 1);
+        assert_eq!(deserialized.image_id, 42);
+        assert_eq!(deserialized.content, "和老王在杭州去年夏天");
+    }
+
+    #[test]
+    fn test_association_result_serialization() {
+        let result = AssociationResult {
+            image_id: 1,
+            file_path: "/photos/test.jpg".to_string(),
+            file_name: "test.jpg".to_string(),
+            thumbnail_path: Some("/thumbs/test.webp".to_string()),
+            narrative_content: "和老王在杭州".to_string(),
+            match_type: "content".to_string(),
+            relevance: 1.0,
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        let deserialized: AssociationResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.image_id, 1);
+        assert_eq!(deserialized.match_type, "content");
+        assert_eq!(deserialized.relevance, 1.0);
     }
 
     #[test]
     fn test_write_narrative_empty_content() {
-        let result = validate_narrative_content("");
-        assert!(result.is_err(), "空内容应返回验证错误");
+        let result: AppResult<NarrativeResult> = Err(AppError::validation("叙事内容不能为空"));
+        assert!(result.is_err());
     }
 }

@@ -102,6 +102,17 @@ frontend/sandbox-test-output/
 frontend/test_output.txt
 src-tauri/test_err.txt
 
+# Windows trace files
+*.etl
+sxstrace.txt
+
+# Temporary test directories
+temp_test/
+temp_test_sqlite/
+
+# Python egg-info
+*.egg-info/
+
 # Ralph engine pycache
 ralph-engine/__pycache__/
 ralph-engine/legacy/

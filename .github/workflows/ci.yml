@@ -71,12 +71,12 @@ jobs:
           workspaces: "src-tauri -> target"
 
       - name: Build Tauri app
-        uses: tauri-apps/tauri-action@v0
+        run: npm run tauri -- build
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
         with:
-          tagName: v__VERSION__
-          releaseName: "ArcaneCodex v__VERSION__"
-          releaseBody: "See the assets below."
-          releaseDraft: true
-          prerelease: false
+          name: windows-x64-bundle
+          path: src-tauri/target/release/bundle/*

@@ -1,9 +1,8 @@
 {
-  "name": "arcanecodex",
+  "name": "arcane-codex-backend",
+  "private": true,
   "scripts": {
-    "build": "cd ../frontend && npm run build"
-  },
-  "devDependencies": {
-    "@tauri-apps/cli": "^2.10.1"
+    "build": "cd ../frontend && npm run build",
+    "dev": "cd ../frontend && npm run dev"
   }
 }
